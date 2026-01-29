@@ -62,4 +62,18 @@ func TestBindFields(t *testing.T) {
 		leafPtr := reflect.ValueOf(&outer.Inner.Leaf.Value)
 		require.Equal(t, "o.outer_inner_value", s.names[leafPtr])
 	})
+
+	t.Run("ignores nil anonymous pointer", func(t *testing.T) {
+		type Embedded struct {
+			Value string `json:"value"`
+		}
+		type Wrapper struct {
+			*Embedded
+		}
+		w := &Wrapper{}
+		s := newScope()
+		require.NotPanics(t, func() {
+			s.bindFields(reflect.ValueOf(w).Elem(), "w")
+		})
+	})
 }

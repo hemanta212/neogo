@@ -290,7 +290,10 @@ func (s *Scope) bindFieldsWithPrefix(strct reflect.Value, memberName, prefix str
 		if !hasTag {
 			// Recurse into composite fields
 			if vfT.Anonymous {
-				s.bindFieldsWithPrefix(vf, memberName, prefix)
+				inner := derefAll(vf)
+				if inner.IsValid() && inner.Kind() == reflect.Struct {
+					s.bindFieldsWithPrefix(inner, memberName, prefix)
+				}
 			}
 			continue
 		}
