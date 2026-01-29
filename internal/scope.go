@@ -274,19 +274,47 @@ func (s *Scope) replaceBinding(m *member) {
 }
 
 func (s *Scope) bindFields(strct reflect.Value, memberName string) {
+	s.bindFieldsWithPrefix(strct, memberName, "")
+}
+
+func (s *Scope) bindFieldsWithPrefix(strct reflect.Value, memberName, prefix string) {
 	vsT := strct.Type()
 	for i := 0; i < vsT.NumField(); i++ {
 		vf := strct.Field(i)
 		vfT := vsT.Field(i)
 
-		accessor, ok := extractJSONFieldName(vsT.Field(i))
-		if !ok {
+		tag, hasTag := PropTagForField(vfT)
+		if hasTag && tag.Ignore {
+			continue
+		}
+		if !hasTag {
 			// Recurse into composite fields
 			if vfT.Anonymous {
-				s.bindFields(vf, memberName)
+				s.bindFieldsWithPrefix(vf, memberName, prefix)
 			}
 			continue
 		}
+		if tag.Flatten {
+			if err := ValidateFlattenType(vfT.Type); err != nil {
+				panic(err)
+			}
+			flattenPrefix := tag.Name
+			if flattenPrefix == "" {
+				flattenPrefix = DefaultPropName(vfT.Name)
+			}
+			vf = derefAll(vf)
+			if !vf.IsValid() {
+				continue
+			}
+			s.bindFieldsWithPrefix(vf, memberName, JoinPrefix(prefix, flattenPrefix))
+			continue
+		}
+
+		accessor := tag.Name
+		if accessor == "" {
+			accessor = DefaultPropName(vfT.Name)
+		}
+		accessor = JoinPrefix(prefix, accessor)
 		ptr := uintptr(vf.Addr().UnsafePointer())
 		f := field{
 			name:       accessor,
@@ -302,6 +330,16 @@ func (s *Scope) bindFields(strct reflect.Value, memberName string) {
 
 func (s *Scope) lookup(value any) *member {
 	return s.register(value, true, nil)
+}
+
+func derefAll(value reflect.Value) reflect.Value {
+	for value.IsValid() && value.Kind() == reflect.Ptr {
+		if value.IsNil() {
+			return reflect.Value{}
+		}
+		value = value.Elem()
+	}
+	return value
 }
 
 func (s *Scope) register(value any, lookup bool, isNode *bool) *member {
@@ -477,10 +515,11 @@ func (s *Scope) register(value any, lookup bool, isNode *bool) *member {
 			// qualified parameters. This allows props to be used in MATCH and MERGE
 			// clause for instance, where a property expression is not allowed.
 			props := make(Props)
-			var bindFieldsFrom func(reflect.Value)
-			bindFieldsFrom = func(value reflect.Value) {
-				for value.Kind() == reflect.Ptr {
-					value = value.Elem()
+			var bindFieldsFrom func(reflect.Value, string)
+			bindFieldsFrom = func(value reflect.Value, prefix string) {
+				value = derefAll(value)
+				if !value.IsValid() || value.Kind() != reflect.Struct {
+					return
 				}
 				innerT := value.Type()
 				for i := 0; i < innerT.NumField(); i++ {
@@ -489,26 +528,51 @@ func (s *Scope) register(value any, lookup bool, isNode *bool) *member {
 						continue
 					}
 					fT := innerT.Field(i)
-					name, ok := extractJSONFieldName(fT)
-					if !ok {
+					tag, hasTag := PropTagForField(fT)
+					if hasTag && tag.Ignore {
+						continue
+					}
+					if !hasTag {
 						if fT.Anonymous {
-							bindFieldsFrom(f)
+							bindFieldsFrom(f, prefix)
 						}
 						continue
 					}
+					if tag.Flatten {
+						if err := ValidateFlattenType(fT.Type); err != nil {
+							panic(err)
+						}
+						flattenPrefix := tag.Name
+						if flattenPrefix == "" {
+							flattenPrefix = DefaultPropName(fT.Name)
+						}
+						if f.Kind() == reflect.Ptr && f.IsNil() {
+							continue
+						}
+						bindFieldsFrom(f, JoinPrefix(prefix, flattenPrefix))
+						continue
+					}
+					name := tag.Name
+					if name == "" {
+						name = DefaultPropName(fT.Name)
+					}
+					name = JoinPrefix(prefix, name)
 					propName := name
 					if m.expr != "" {
 						propName = m.expr + "_" + name
 					}
 
 					prop := f.Interface()
+					if _, exists := props[name]; exists {
+						panic(fmt.Errorf("duplicate property key: %s", name))
+					}
 					props[name] = Param{
 						Name:  propName,
 						Value: &prop,
 					}
 				}
 			}
-			bindFieldsFrom(inner)
+			bindFieldsFrom(inner, "")
 			if len(props) > 0 {
 				if m.variable == nil {
 					m.variable = &Variable{}

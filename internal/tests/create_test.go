@@ -220,7 +220,10 @@ func TestCreate(t *testing.T) {
 		t.Run("Create node with a parameter for the properties", func(t *testing.T) {
 			c := internal.NewCypherClient()
 			n := Person{
-				Name:     "Andy",
+				Name: "Andy",
+				NameLocale: Locales{
+					EnUS: "Anders",
+				},
 				Position: "Developer",
 			}
 			cy, err := c.
@@ -230,12 +233,13 @@ func TestCreate(t *testing.T) {
 
 			Check(t, cy, err, internal.CompiledCypher{
 				Cypher: `
-					CREATE (n:Person {name: $n_name, position: $n_position})
+					CREATE (n:Person {name: $n_name, name_enUS: $n_name_enUS, position: $n_position})
 					RETURN n
 					`,
 				Parameters: map[string]any{
-					"n_name":     n.Name,
-					"n_position": n.Position,
+					"n_name":      n.Name,
+					"n_name_enUS": n.NameLocale.EnUS,
+					"n_position":  n.Position,
 				},
 				Bindings: map[string]reflect.Value{
 					"n": reflect.ValueOf(&n),

@@ -472,4 +472,54 @@ func TestBindValue(t *testing.T) {
 			},
 		}, *to)
 	})
+
+	t.Run("binds map props into flatten struct", func(t *testing.T) {
+		props := map[string]any{
+			"id":        "1",
+			"name":      "John",
+			"name_enUS": "Jahn",
+		}
+		person := tests.Person{}
+		err := r.bindValue(props, reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Equal(t, "1", person.ID)
+		require.Equal(t, "John", person.Name)
+		require.Equal(t, "Jahn", person.NameLocale.EnUS)
+	})
+
+	t.Run("binds map props into pointer flatten struct", func(t *testing.T) {
+		props := map[string]any{
+			"name_enUS": "Jahn",
+		}
+		person := struct {
+			NameLocale *tests.Locales `db:"name,flatten"`
+		}{}
+		err := r.bindValue(props, reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.NotNil(t, person.NameLocale)
+		require.Equal(t, "Jahn", person.NameLocale.EnUS)
+	})
+
+	t.Run("keeps nil pointer when no matching prefix", func(t *testing.T) {
+		props := map[string]any{
+			"other": "value",
+		}
+		person := struct {
+			NameLocale *tests.Locales `db:"name,flatten"`
+		}{}
+		err := r.bindValue(props, reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Nil(t, person.NameLocale)
+	})
+
+	t.Run("returns error on property collision", func(t *testing.T) {
+		type collision struct {
+			A string `db:"name"`
+			B string `db:"name"`
+		}
+		props := map[string]any{"name": "value"}
+		out := collision{}
+		err := r.bindValue(props, reflect.ValueOf(&out))
+		require.Error(t, err)
+	})
 }
