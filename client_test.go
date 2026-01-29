@@ -2,6 +2,7 @@ package neogo
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -873,11 +874,11 @@ func TestResultImpl(t *testing.T) {
 		})
 
 		t.Run("should throw error when there is error in resultWithContext", func(t *testing.T) {
-			var n []any
+			var n int
 			c := internal.NewCypherClient()
 			cy, err := c.
-				Match(db.Node(db.Var(n, db.Name("n")))).
-				Return(n).
+				Unwind("range(0, 1)", "i").
+				Return(db.Qual(&n, "i")).
 				Compile()
 			assert.NoError(t, err)
 			params, err := canonicalizeParams(cy.Parameters)
@@ -890,6 +891,9 @@ func TestResultImpl(t *testing.T) {
 				assert.NoError(t, err)
 				_, resultErr := result.Single(ctx)
 				assert.Error(t, resultErr)
+				if resultErr == nil {
+					resultErr = errors.New("expected error from result.Single")
+				}
 
 				var res query.Result = &resultImpl{
 					ResultWithContext: result,
