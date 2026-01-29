@@ -527,7 +527,7 @@ func (s *Scope) register(value any, lookup bool, isNode *bool) *member {
 				innerT := value.Type()
 				for i := 0; i < innerT.NumField(); i++ {
 					f := value.Field(i)
-					if !f.IsValid() || !f.CanInterface() || f.IsZero() {
+					if !f.IsValid() || !f.CanInterface() {
 						continue
 					}
 					fT := innerT.Field(i)
@@ -545,6 +545,9 @@ func (s *Scope) register(value any, lookup bool, isNode *bool) *member {
 						if err := ValidateFlattenType(fT.Type); err != nil {
 							panic(err)
 						}
+						if f.IsZero() {
+							continue
+						}
 						flattenPrefix := tag.Name
 						if flattenPrefix == "" {
 							flattenPrefix = DefaultPropName(fT.Name)
@@ -553,6 +556,9 @@ func (s *Scope) register(value any, lookup bool, isNode *bool) *member {
 							continue
 						}
 						bindFieldsFrom(f, JoinPrefix(prefix, flattenPrefix))
+						continue
+					}
+					if f.IsZero() {
 						continue
 					}
 					name := tag.Name
