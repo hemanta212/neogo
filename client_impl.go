@@ -541,10 +541,20 @@ func canonicalizeParams(params map[string]any) (map[string]any, error) {
 	for k, v := range params {
 		if v == nil {
 			canon[k] = nil
+			continue
 		}
 		vv := reflect.ValueOf(v)
 		for vv.Kind() == reflect.Ptr {
+			if vv.IsNil() {
+				canon[k] = nil
+				vv = reflect.Value{}
+				break
+			}
 			vv = vv.Elem()
+		}
+		if !vv.IsValid() {
+			canon[k] = nil
+			continue
 		}
 		switch vv.Kind() {
 		case reflect.Slice:
@@ -557,7 +567,7 @@ func canonicalizeParams(params map[string]any) (map[string]any, error) {
 				return nil, fmt.Errorf("cannot unmarshal slice: %w", err)
 			}
 			canon[k] = js
-		case reflect.Map, reflect.Struct:
+		case reflect.Map:
 			bytes, err := json.Marshal(v)
 			if err != nil {
 				return nil, fmt.Errorf("cannot marshal map: %w", err)
@@ -567,9 +577,49 @@ func canonicalizeParams(params map[string]any) (map[string]any, error) {
 				return nil, fmt.Errorf("cannot unmarshal map: %w", err)
 			}
 			canon[k] = js
+		case reflect.Struct:
+			if hasPropTags(vv.Type()) {
+				props, err := PropsFromStruct(v)
+				if err != nil {
+					return nil, err
+				}
+				canon[k] = props
+				continue
+			}
+			bytes, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("cannot marshal struct: %w", err)
+			}
+			var js any
+			if err := json.Unmarshal(bytes, &js); err != nil {
+				return nil, fmt.Errorf("cannot unmarshal struct: %w", err)
+			}
+			canon[k] = js
 		default:
 			canon[k] = v
 		}
 	}
 	return canon, nil
+}
+
+func hasPropTags(t reflect.Type) bool {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.PkgPath != "" {
+			continue
+		}
+		if _, ok := internal.PropTagForField(f); ok {
+			return true
+		}
+		if f.Anonymous && hasPropTags(f.Type) {
+			return true
+		}
+	}
+	return false
 }
