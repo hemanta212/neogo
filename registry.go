@@ -327,6 +327,13 @@ func (r *registry) bindValue(from any, to reflect.Value) (err error) {
 		}
 	}
 
+	if props, ok := from.(map[string]any); ok {
+		okStruct, err := r.bindMapToStruct(props, to, "", nil)
+		if okStruct {
+			return err
+		}
+	}
+
 	// PERF: Obviously huge performance hit here. Consider alternative ways of
 	// coercing between types. Might just need to be imperative and verbose
 	bytes, err := json.Marshal(from)
@@ -338,6 +345,140 @@ func (r *registry) bindValue(from any, to reflect.Value) (err error) {
 		return err
 	}
 	return nil
+}
+
+func (r *registry) bindMapToStruct(props map[string]any, to reflect.Value, prefix string, seen map[string]struct{}) (bool, error) {
+	value := to
+	for value.Kind() == reflect.Ptr {
+		if value.IsNil() {
+			value.Set(reflect.New(value.Type().Elem()))
+		}
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Struct {
+		return false, nil
+	}
+	if seen == nil {
+		seen = make(map[string]struct{})
+		if err := r.checkPropCollisions(value.Type(), prefix, seen); err != nil {
+			return true, err
+		}
+	}
+
+	valueT := value.Type()
+	for i := 0; i < valueT.NumField(); i++ {
+		sf := valueT.Field(i)
+		if sf.PkgPath != "" {
+			continue
+		}
+		fv := value.Field(i)
+		tag, hasTag := internal.PropTagForField(sf)
+		if hasTag && tag.Ignore {
+			continue
+		}
+		if !hasTag {
+			if sf.Anonymous {
+				if _, err := r.bindMapToStruct(props, fv, prefix, seen); err != nil {
+					return true, err
+				}
+			}
+			continue
+		}
+		if tag.Flatten {
+			flattenPrefix := tag.Name
+			if flattenPrefix == "" {
+				flattenPrefix = internal.DefaultPropName(sf.Name)
+			}
+			flattenKey := internal.JoinPrefix(prefix, flattenPrefix)
+			if fv.Kind() == reflect.Ptr && fv.IsNil() && !hasPropPrefix(props, flattenKey) {
+				continue
+			}
+			if _, err := r.bindMapToStruct(props, fv, flattenKey, seen); err != nil {
+				return true, err
+			}
+			continue
+		}
+		name := tag.Name
+		if name == "" {
+			name = internal.DefaultPropName(sf.Name)
+		}
+		key := internal.JoinPrefix(prefix, name)
+		if raw, ok := props[key]; ok {
+			if fv.CanAddr() {
+				if err := r.bindValue(raw, fv.Addr()); err != nil {
+					return true, err
+				}
+			} else if fv.CanSet() {
+				if err := r.bindValue(raw, fv); err != nil {
+					return true, err
+				}
+			}
+		}
+	}
+	return true, nil
+}
+
+func (r *registry) checkPropCollisions(t reflect.Type, prefix string, seen map[string]struct{}) error {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	for i := 0; i < t.NumField(); i++ {
+		fT := t.Field(i)
+		if fT.PkgPath != "" {
+			continue
+		}
+		tag, hasTag := internal.PropTagForField(fT)
+		if hasTag && tag.Ignore {
+			continue
+		}
+		if !hasTag {
+			if fT.Anonymous {
+				if err := r.checkPropCollisions(fT.Type, prefix, seen); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if tag.Flatten {
+			if err := internal.ValidateFlattenType(fT.Type); err != nil {
+				return err
+			}
+			flattenPrefix := tag.Name
+			if flattenPrefix == "" {
+				flattenPrefix = internal.DefaultPropName(fT.Name)
+			}
+			if err := r.checkPropCollisions(fT.Type, internal.JoinPrefix(prefix, flattenPrefix), seen); err != nil {
+				return err
+			}
+			continue
+		}
+		name := tag.Name
+		if name == "" {
+			name = internal.DefaultPropName(fT.Name)
+		}
+		key := internal.JoinPrefix(prefix, name)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate property key: %s", key)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+func hasPropPrefix(props map[string]any, prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	needle := prefix + "_"
+	for key := range props {
+		if strings.HasPrefix(key, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *registry) bindAbstractNode(node neo4j.Node, to reflect.Value) error {

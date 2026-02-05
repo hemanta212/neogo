@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/iancoleman/strcase"
 )
 
 const neo4jTag = "neo4j"
@@ -140,10 +142,66 @@ func extractNeo4JName(instance any, fields ...string) ([]neo4jName, error) {
 	return tags, nil
 }
 
-func extractJSONFieldName(field reflect.StructField) (string, bool) {
-	jsTag, ok := field.Tag.Lookup("json")
-	if !ok {
-		return "", false
+type PropTag struct {
+	Name    string
+	Flatten bool
+	Ignore  bool
+	TagKey  string
+	RawOpts []string
+}
+
+func PropTagForField(sf reflect.StructField) (PropTag, bool) {
+	if raw, ok := sf.Tag.Lookup("db"); ok {
+		return ParsePropTag("db", raw), true
 	}
-	return strings.Split(jsTag, ",")[0], true
+	if raw, ok := sf.Tag.Lookup("json"); ok {
+		return ParsePropTag("json", raw), true
+	}
+	return PropTag{}, false
+}
+
+func ParsePropTag(key, raw string) PropTag {
+	parts := strings.Split(raw, ",")
+	name := parts[0]
+	opts := []string{}
+	if len(parts) > 1 {
+		opts = parts[1:]
+	}
+
+	t := PropTag{
+		TagKey:  key,
+		Name:    name,
+		RawOpts: opts,
+	}
+	if name == "-" {
+		t.Ignore = true
+		return t
+	}
+	for _, o := range opts {
+		if o == "flatten" {
+			t.Flatten = true
+		}
+	}
+	return t
+}
+
+func DefaultPropName(fieldName string) string {
+	return strcase.ToLowerCamel(fieldName)
+}
+
+func JoinPrefix(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "_" + name
+}
+
+func ValidateFlattenType(t reflect.Type) error {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return fmt.Errorf("flatten field must be struct or pointer-to-struct")
+	}
+	return nil
 }

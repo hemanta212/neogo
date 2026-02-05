@@ -31,6 +31,9 @@ func Check(t *testing.T, cy *internal.CompiledCypher, err error, want internal.C
 }
 
 type (
+	Locales struct {
+		EnUS string `db:"enUS" json:"enUS"`
+	}
 	Movie struct {
 		internal.Node `neo4j:"Movie"`
 
@@ -42,6 +45,7 @@ type (
 		internal.Node `neo4j:"Person"`
 
 		Name          string  `json:"name"`
+		NameLocale    Locales `db:"name,flatten"`
 		Surname       string  `json:"surname"`
 		Position      string  `json:"position"`
 		Email         string  `json:"email"`

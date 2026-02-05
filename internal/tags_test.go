@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -87,7 +88,7 @@ func TestExtractNodeLabel(t *testing.T) {
 	})
 
 	t.Run("extracts from structs embedding Label, ordered by DFS", func(t *testing.T) {
-		var swedishRobot = struct {
+		swedishRobot := struct {
 			swedishPerson
 			robot
 		}{}
@@ -127,5 +128,64 @@ func TestExtractRelationshipType(t *testing.T) {
 
 	t.Run("extract relationship type from pointer to slice of relationship", func(t *testing.T) {
 		assert.Equal(t, "Friendship", ExtractRelationshipType(&[]*friendship{}))
+	})
+}
+
+type propTagExample struct {
+	Name      string `json:"name"`
+	DBName    string `db:"dbName" json:"ignored"`
+	Flattened string `db:",flatten"`
+	Ignored   string `json:"-"`
+}
+
+type flattenStruct struct {
+	Value string
+}
+
+func TestPropTagForField(t *testing.T) {
+	t.Run("db tag takes precedence", func(t *testing.T) {
+		f, _ := reflect.TypeOf(propTagExample{}).FieldByName("DBName")
+		tag, ok := PropTagForField(f)
+		assert.True(t, ok)
+		assert.Equal(t, "db", tag.TagKey)
+		assert.Equal(t, "dbName", tag.Name)
+		assert.False(t, tag.Flatten)
+		assert.False(t, tag.Ignore)
+	})
+
+	t.Run("flatten with empty name", func(t *testing.T) {
+		f, _ := reflect.TypeOf(propTagExample{}).FieldByName("Flattened")
+		tag, ok := PropTagForField(f)
+		assert.True(t, ok)
+		assert.Equal(t, "", tag.Name)
+		assert.True(t, tag.Flatten)
+	})
+
+	t.Run("parse ignores field name", func(t *testing.T) {
+		tag := ParsePropTag("db", ",flatten")
+		assert.Equal(t, "", tag.Name)
+		assert.True(t, tag.Flatten)
+	})
+
+	t.Run("ignore tag", func(t *testing.T) {
+		f, _ := reflect.TypeOf(propTagExample{}).FieldByName("Ignored")
+		tag, ok := PropTagForField(f)
+		assert.True(t, ok)
+		assert.True(t, tag.Ignore)
+	})
+
+	t.Run("json tag fallback", func(t *testing.T) {
+		f, _ := reflect.TypeOf(propTagExample{}).FieldByName("Name")
+		tag, ok := PropTagForField(f)
+		assert.True(t, ok)
+		assert.Equal(t, "json", tag.TagKey)
+		assert.Equal(t, "name", tag.Name)
+	})
+
+	t.Run("validate flatten type", func(t *testing.T) {
+		type NotStruct string
+		assert.NoError(t, ValidateFlattenType(reflect.TypeOf(flattenStruct{})))
+		assert.NoError(t, ValidateFlattenType(reflect.TypeOf(&flattenStruct{})))
+		assert.Error(t, ValidateFlattenType(reflect.TypeOf(NotStruct(""))))
 	})
 }
