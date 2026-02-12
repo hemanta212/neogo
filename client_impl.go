@@ -58,6 +58,9 @@ type (
 )
 
 func (s *session) newClient(cy *internal.CypherClient) *clientImpl {
+	if cy != nil && cy.Scope != nil {
+		cy.Scope.SetMarshalHook(s.applyMarshalHooks)
+	}
 	return &clientImpl{
 		session: s,
 		cy:      cy,
@@ -262,7 +265,7 @@ func (c *runnerImpl) run(
 	if err != nil {
 		return nil, fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters)
+	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.applyMarshalHooks)
 	if err != nil {
 		return nil, fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -317,7 +320,7 @@ func (c *runnerImpl) StreamWithParams(ctx context.Context, params map[string]any
 	if err != nil {
 		return fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters)
+	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.applyMarshalHooks)
 	if err != nil {
 		return fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -533,7 +536,7 @@ func (c *runnerImpl) executeTransaction(
 	return
 }
 
-func canonicalizeParams(params map[string]any) (map[string]any, error) {
+func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Value) error) (map[string]any, error) {
 	canon := make(map[string]any, len(params))
 	if len(params) == 0 {
 		return canon, nil
@@ -541,6 +544,12 @@ func canonicalizeParams(params map[string]any) (map[string]any, error) {
 	for k, v := range params {
 		if v == nil {
 			canon[k] = nil
+			continue
+		}
+		if applyMarshalHooks != nil {
+			if err := applyMarshalHooks(reflect.ValueOf(v)); err != nil {
+				return nil, fmt.Errorf("cannot apply marshal hooks for param %s: %w", k, err)
+			}
 		}
 		vv := reflect.ValueOf(v)
 		for vv.Kind() == reflect.Ptr {

@@ -41,10 +41,18 @@ type Valuer[V neo4j.RecordValue] interface {
 	Unmarshal(*V) error
 }
 
+type Hook func(reflect.Value) error
+
+type MarshalHook = Hook
+
+type UnmarshalHook = Hook
+
 type registry struct {
-	abstractNodes []any
-	nodes         []any
-	relationships []any
+	abstractNodes  []any
+	nodes          []any
+	relationships  []any
+	marshalHooks   []Hook
+	unmarshalHooks []Hook
 }
 
 func (r *registry) registerTypes(types ...any) {
@@ -71,6 +79,95 @@ func (r *registry) registerTypes(types ...any) {
 			continue
 		}
 	}
+}
+
+func (r *registry) registerMarshalHook(hook MarshalHook) {
+	if hook == nil {
+		return
+	}
+	r.marshalHooks = append(r.marshalHooks, hook)
+}
+
+func (r *registry) registerUnmarshalHook(hook UnmarshalHook) {
+	if hook == nil {
+		return
+	}
+	r.unmarshalHooks = append(r.unmarshalHooks, hook)
+}
+
+func (r *registry) applyMarshalHooks(value reflect.Value) error {
+	return r.applyHooks(value, r.marshalHooks)
+}
+
+func (r *registry) applyUnmarshalHooks(value reflect.Value) error {
+	return r.applyHooks(value, r.unmarshalHooks)
+}
+
+func (r *registry) applyHooks(
+	value reflect.Value,
+	hooks []Hook,
+) error {
+	if value == (reflect.Value{}) {
+		return nil
+	}
+	return r.applyHooksRecursive(value, hooks, make(map[uintptr]struct{}))
+}
+
+func (r *registry) applyHooksRecursive(
+	value reflect.Value,
+	hooks []Hook,
+	seen map[uintptr]struct{},
+) error {
+	if !value.IsValid() {
+		return nil
+	}
+	for value.Kind() == reflect.Ptr {
+		if value.IsNil() {
+			return nil
+		}
+		ptr := value.Pointer()
+		if _, ok := seen[ptr]; ok {
+			return nil
+		}
+		seen[ptr] = struct{}{}
+		value = value.Elem()
+	}
+
+	if !value.IsValid() {
+		return nil
+	}
+
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return nil
+		}
+		return r.applyHooksRecursive(value.Elem(), hooks, seen)
+	case reflect.Struct:
+		for _, hook := range hooks {
+			if err := hook(value); err != nil {
+				return err
+			}
+		}
+		valueT := value.Type()
+		for i := 0; i < valueT.NumField(); i++ {
+			fv := value.Field(i)
+			ft := valueT.Field(i)
+			if ft.PkgPath != "" {
+				continue
+			}
+			if err := r.applyHooksRecursive(fv, hooks, seen); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			if err := r.applyHooksRecursive(value.Index(i), hooks, seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func unwindType(ptrTo reflect.Type) reflect.Type {
@@ -115,6 +212,18 @@ func bindCasted[C any](
 var emptyInterface = reflect.TypeOf((*any)(nil)).Elem()
 
 func (r *registry) bindValue(from any, to reflect.Value) (err error) {
+	defer func() {
+		if err != nil || to == (reflect.Value{}) {
+			return
+		}
+		if len(r.unmarshalHooks) == 0 {
+			return
+		}
+		if hookErr := r.applyUnmarshalHooks(to); hookErr != nil {
+			err = hookErr
+		}
+	}()
+
 	toT := to.Type()
 	if to.Kind() == reflect.Ptr && toT.Elem() == emptyInterface {
 		to.Elem().Set(reflect.ValueOf(from))

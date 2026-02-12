@@ -34,6 +34,8 @@ type Config struct {
 
 	CausalConsistencyKey func(context.Context) string
 	Types                []any
+	MarshalHooks         []Hook
+	UnmarshalHooks       []Hook
 }
 
 // Configurer is a function that configures a neogo Config.
@@ -60,6 +62,22 @@ func WithCausalConsistency(when func(ctx context.Context) string) Configurer {
 func WithTypes(types ...any) Configurer {
 	return func(c *Config) {
 		c.Types = append(c.Types, types...)
+	}
+}
+
+// WithMarshalHook registers a hook that is invoked before struct values are
+// marshalled into query parameters.
+func WithMarshalHook(hook MarshalHook) Configurer {
+	return func(c *Config) {
+		c.MarshalHooks = append(c.MarshalHooks, hook)
+	}
+}
+
+// WithUnmarshalHook registers a hook that is invoked after values are
+// unmarshalled into result bindings.
+func WithUnmarshalHook(hook UnmarshalHook) Configurer {
+	return func(c *Config) {
+		c.UnmarshalHooks = append(c.UnmarshalHooks, hook)
 	}
 }
 
