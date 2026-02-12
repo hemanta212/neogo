@@ -45,14 +45,14 @@ type Hook func(reflect.Value) error
 
 type MarshalHook = Hook
 
-type UnmarshalHook = Hook
+type UnmarshalHook func(from any, to reflect.Value) error
 
 type registry struct {
 	abstractNodes  []any
 	nodes          []any
 	relationships  []any
-	marshalHooks   []Hook
-	unmarshalHooks []Hook
+	marshalHooks   []MarshalHook
+	unmarshalHooks []UnmarshalHook
 }
 
 func (r *registry) registerTypes(types ...any) {
@@ -99,13 +99,77 @@ func (r *registry) applyMarshalHooks(value reflect.Value) error {
 	return r.applyHooks(value, r.marshalHooks)
 }
 
-func (r *registry) applyUnmarshalHooks(value reflect.Value) error {
-	return r.applyHooks(value, r.unmarshalHooks)
+func (r *registry) applyUnmarshalHooks(from any, value reflect.Value) error {
+	if value == (reflect.Value{}) {
+		return nil
+	}
+	if len(r.unmarshalHooks) == 0 {
+		return nil
+	}
+	return r.applyUnmarshalHooksRecursive(from, value, make(map[uintptr]struct{}))
+}
+
+func (r *registry) applyUnmarshalHooksRecursive(
+	from any,
+	value reflect.Value,
+	seen map[uintptr]struct{},
+) error {
+	if !value.IsValid() {
+		return nil
+	}
+	for value.Kind() == reflect.Ptr {
+		if value.IsNil() {
+			return nil
+		}
+		ptr := value.Pointer()
+		if _, ok := seen[ptr]; ok {
+			return nil
+		}
+		seen[ptr] = struct{}{}
+		value = value.Elem()
+	}
+
+	if !value.IsValid() {
+		return nil
+	}
+
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return nil
+		}
+		return r.applyUnmarshalHooksRecursive(from, value.Elem(), seen)
+	case reflect.Struct:
+		for _, hook := range r.unmarshalHooks {
+			if err := hook(from, value); err != nil {
+				return err
+			}
+		}
+		valueT := value.Type()
+		for i := 0; i < valueT.NumField(); i++ {
+			fv := value.Field(i)
+			ft := valueT.Field(i)
+			if ft.PkgPath != "" {
+				continue
+			}
+			// Nested fields don't have a corresponding raw source, pass nil.
+			if err := r.applyUnmarshalHooksRecursive(nil, fv, seen); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			if err := r.applyUnmarshalHooksRecursive(nil, value.Index(i), seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (r *registry) applyHooks(
 	value reflect.Value,
-	hooks []Hook,
+	hooks []MarshalHook,
 ) error {
 	if value == (reflect.Value{}) {
 		return nil
@@ -115,7 +179,7 @@ func (r *registry) applyHooks(
 
 func (r *registry) applyHooksRecursive(
 	value reflect.Value,
-	hooks []Hook,
+	hooks []MarshalHook,
 	seen map[uintptr]struct{},
 ) error {
 	if !value.IsValid() {
@@ -216,10 +280,7 @@ func (r *registry) bindValue(from any, to reflect.Value) (err error) {
 		if err != nil || to == (reflect.Value{}) {
 			return
 		}
-		if len(r.unmarshalHooks) == 0 {
-			return
-		}
-		if hookErr := r.applyUnmarshalHooks(to); hookErr != nil {
+		if hookErr := r.applyUnmarshalHooks(from, to); hookErr != nil {
 			err = hookErr
 		}
 	}()

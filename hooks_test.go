@@ -62,7 +62,7 @@ func TestUnmarshalHook(t *testing.T) {
 		called int
 		r      registry
 	)
-	r.registerUnmarshalHook(func(value reflect.Value) error {
+	r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 		if setHookName(value, "hooked") {
 			called++
 		}
@@ -99,7 +99,7 @@ func TestUnmarshalHookEdgeCases(t *testing.T) {
 	t.Run("propagates hook errors", func(t *testing.T) {
 		var r registry
 		expected := errors.New("boom")
-		r.registerUnmarshalHook(func(value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			return expected
 		})
 		person := hookPerson{}
@@ -112,7 +112,7 @@ func TestUnmarshalHookEdgeCases(t *testing.T) {
 			called int
 			r      registry
 		)
-		r.registerUnmarshalHook(func(value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			if setHookName(value, "nested") {
 				called++
 			}
@@ -133,14 +133,14 @@ func TestUnmarshalHookEdgeCases(t *testing.T) {
 			called int
 			r      registry
 		)
-		r.registerUnmarshalHook(func(value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			if setHookName(value, "iface") {
 				called++
 			}
 			return nil
 		})
 		wrapper := hookIfaceWrapper{Item: &hookPerson{Name: "x"}}
-		err := r.applyUnmarshalHooks(reflect.ValueOf(&wrapper))
+		err := r.applyUnmarshalHooks(nil, reflect.ValueOf(&wrapper))
 		require.NoError(t, err)
 		require.Equal(t, "iface", wrapper.Item.(*hookPerson).Name)
 		require.GreaterOrEqual(t, called, 1)
@@ -148,11 +148,11 @@ func TestUnmarshalHookEdgeCases(t *testing.T) {
 
 	t.Run("applies multiple hooks in order", func(t *testing.T) {
 		var r registry
-		r.registerUnmarshalHook(func(value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			setHookName(value, "first")
 			return nil
 		})
-		r.registerUnmarshalHook(func(value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			field := value.FieldByName("Name")
 			if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.String {
 				return nil
@@ -193,7 +193,7 @@ func TestMarshalHook(t *testing.T) {
 func TestLocalesHook(t *testing.T) {
 	t.Run("fills base from locale on unmarshal", func(t *testing.T) {
 		var r registry
-		r.registerUnmarshalHook(LocalesHook())
+		r.registerUnmarshalHook(LocalesUnmarshalHook())
 		person := hookLocalizedPerson{}
 		err := r.bindValue(map[string]any{
 			"nameLocale": map[string]any{"enUS": "Hello"},
@@ -214,7 +214,7 @@ func TestLocalesHook(t *testing.T) {
 
 	t.Run("prefers selected locale on unmarshal", func(t *testing.T) {
 		var r registry
-		r.registerUnmarshalHook(LocalesHookWithSelector(staticLocaleSelector{"EnAU", "EnUS"}))
+		r.registerUnmarshalHook(LocalesUnmarshalHookWithSelector(staticLocaleSelector{"EnAU", "EnUS"}))
 		person := hookLocalizedPerson{}
 		err := r.bindValue(map[string]any{
 			"nameLocale": map[string]any{"enUS": "US", "enAU": "AU"},
@@ -231,6 +231,64 @@ func TestLocalesHook(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "Hi", person.NameLocale.EnAU)
 		require.Empty(t, person.NameLocale.EnUS)
+	})
+
+	t.Run("extracts flat locale keys from raw props", func(t *testing.T) {
+		var r registry
+		r.registerUnmarshalHook(LocalesUnmarshalHook())
+		person := hookLocalizedPerson{}
+		err := r.bindValue(map[string]any{
+			"name":      "fallback",
+			"name_enUS": "US Value",
+			"name_enAU": "AU Value",
+		}, reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Equal(t, "US Value", person.NameLocale.EnUS)
+		require.Equal(t, "AU Value", person.NameLocale.EnAU)
+		// Base should be set from preferred locale (EnUS first by default)
+		require.Equal(t, "US Value", person.Name)
+	})
+
+	t.Run("extracts flat keys with AU preference", func(t *testing.T) {
+		var r registry
+		r.registerUnmarshalHook(LocalesUnmarshalHookWithSelector(staticLocaleSelector{"EnAU", "EnUS"}))
+		person := hookLocalizedPerson{}
+		err := r.bindValue(map[string]any{
+			"name":      "fallback",
+			"name_enUS": "US Value",
+			"name_enAU": "AU Value",
+		}, reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Equal(t, "US Value", person.NameLocale.EnUS)
+		require.Equal(t, "AU Value", person.NameLocale.EnAU)
+		// Base should be set from preferred locale (EnAU first)
+		require.Equal(t, "AU Value", person.Name)
+	})
+
+	t.Run("extracts flat keys with pointer locale struct", func(t *testing.T) {
+		var r registry
+		r.registerUnmarshalHook(LocalesUnmarshalHookWithSelector(staticLocaleSelector{"EnUS", "EnAU"}))
+		person := hookNilableLocalePerson{}
+		err := r.bindValue(map[string]any{
+			"name":      "fallback",
+			"name_enUS": "Hello US",
+		}, reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.NotNil(t, person.NameLocale, "nil pointer locale should be allocated when flat keys exist")
+		require.Equal(t, "Hello US", person.NameLocale.EnUS)
+		require.Equal(t, "Hello US", person.Name)
+	})
+
+	t.Run("no flat keys leaves pointer locale nil", func(t *testing.T) {
+		var r registry
+		r.registerUnmarshalHook(LocalesUnmarshalHookWithSelector(staticLocaleSelector{"EnUS", "EnAU"}))
+		person := hookNilableLocalePerson{}
+		err := r.bindValue(map[string]any{
+			"name": "Hello",
+		}, reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Nil(t, person.NameLocale, "pointer locale should stay nil when no flat keys present")
+		require.Equal(t, "Hello", person.Name)
 	})
 }
 
@@ -277,12 +335,12 @@ func TestLocalesHookZeroValuePreservation(t *testing.T) {
 		// Name is ptr("") — caller explicitly set base to empty string.
 		// The hook must NOT overwrite it with a locale value.
 		var r registry
-		r.registerUnmarshalHook(LocalesHook())
+		r.registerUnmarshalHook(LocalesUnmarshalHook())
 		person := hookPtrBaseLocalePerson{
 			Name:       strPtr(""),
 			NameLocale: &hookLocales{EnUS: "Hello"},
 		}
-		err := r.applyUnmarshalHooks(reflect.ValueOf(&person))
+		err := r.applyUnmarshalHooks(nil, reflect.ValueOf(&person))
 		require.NoError(t, err)
 		require.NotNil(t, person.Name)
 		require.Equal(t, "", *person.Name,
@@ -292,12 +350,12 @@ func TestLocalesHookZeroValuePreservation(t *testing.T) {
 	t.Run("unmarshal: nil pointer base gets filled from locale", func(t *testing.T) {
 		// Name is nil — base was never set — should be allocated and filled from locale.
 		var r registry
-		r.registerUnmarshalHook(LocalesHook())
+		r.registerUnmarshalHook(LocalesUnmarshalHook())
 		person := hookPtrBaseLocalePerson{
 			Name:       nil,
 			NameLocale: &hookLocales{EnUS: "Hello"},
 		}
-		err := r.applyUnmarshalHooks(reflect.ValueOf(&person))
+		err := r.applyUnmarshalHooks(nil, reflect.ValueOf(&person))
 		require.NoError(t, err)
 		require.NotNil(t, person.Name)
 		require.Equal(t, "Hello", *person.Name)

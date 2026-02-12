@@ -34,8 +34,8 @@ type Config struct {
 
 	CausalConsistencyKey func(context.Context) string
 	Types                []any
-	MarshalHooks         []Hook
-	UnmarshalHooks       []Hook
+	MarshalHooks         []MarshalHook
+	UnmarshalHooks       []UnmarshalHook
 }
 
 // Configurer is a function that configures a neogo Config.
