@@ -34,6 +34,20 @@ type hookLocalizedPerson struct {
 	NameLocale hookLocales `json:"nameLocale"`
 }
 
+// Pointer locale struct — nil means "not provided", non-nil zero struct means "all fields explicitly empty"
+type hookNilableLocalePerson struct {
+	Name       string       `json:"name"`
+	NameLocale *hookLocales `json:"nameLocale"`
+}
+
+// Pointer base + pointer locale — both support nil-vs-zero distinction
+type hookPtrBaseLocalePerson struct {
+	Name       *string      `json:"name"`
+	NameLocale *hookLocales `json:"nameLocale"`
+}
+
+func strPtr(s string) *string { return &s }
+
 func setHookName(value reflect.Value, next string) bool {
 	field := value.FieldByName("Name")
 	if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.String {
@@ -218,4 +232,108 @@ func TestLocalesHook(t *testing.T) {
 		require.Equal(t, "Hi", person.NameLocale.EnAU)
 		require.Empty(t, person.NameLocale.EnUS)
 	})
+}
+
+// TestLocalesHookZeroValuePreservation exercises nil-vs-zero semantics.
+// A non-nil pointer to a zero-value struct/field means "explicitly set to empty" and
+// must be preserved. Only nil pointers mean "not provided" and should trigger fallback.
+func TestLocalesHookZeroValuePreservation(t *testing.T) {
+	// --- Marshal direction: base -> locale ---
+
+	t.Run("marshal: non-nil pointer locale with empty fields NOT overwritten from base", func(t *testing.T) {
+		// NameLocale is explicitly &hookLocales{EnUS:"", EnAU:""} — caller said "all locales are empty".
+		// The hook must NOT overwrite these empty strings with base value.
+		var r registry
+		r.registerMarshalHook(LocalesHook())
+		person := hookNilableLocalePerson{
+			Name:       "Hello",
+			NameLocale: &hookLocales{EnUS: "", EnAU: ""},
+		}
+		err := r.applyMarshalHooks(reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Equal(t, "", person.NameLocale.EnUS,
+			"explicitly provided empty locale field should not be overwritten from base")
+		require.Equal(t, "", person.NameLocale.EnAU,
+			"explicitly provided empty locale field should not be overwritten from base")
+	})
+
+	t.Run("marshal: nil pointer locale gets filled from base", func(t *testing.T) {
+		// NameLocale is nil — locale was never set — should be allocated and filled from base.
+		var r registry
+		r.registerMarshalHook(LocalesHook())
+		person := hookNilableLocalePerson{
+			Name:       "Hello",
+			NameLocale: nil,
+		}
+		err := r.applyMarshalHooks(reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.NotNil(t, person.NameLocale)
+		require.Equal(t, "Hello", person.NameLocale.EnUS)
+	})
+
+	// --- Unmarshal direction: locale -> base ---
+
+	t.Run("unmarshal: non-nil pointer base with empty string NOT overwritten from locale", func(t *testing.T) {
+		// Name is ptr("") — caller explicitly set base to empty string.
+		// The hook must NOT overwrite it with a locale value.
+		var r registry
+		r.registerUnmarshalHook(LocalesHook())
+		person := hookPtrBaseLocalePerson{
+			Name:       strPtr(""),
+			NameLocale: &hookLocales{EnUS: "Hello"},
+		}
+		err := r.applyUnmarshalHooks(reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.NotNil(t, person.Name)
+		require.Equal(t, "", *person.Name,
+			"explicitly empty base should not be overwritten from locale")
+	})
+
+	t.Run("unmarshal: nil pointer base gets filled from locale", func(t *testing.T) {
+		// Name is nil — base was never set — should be allocated and filled from locale.
+		var r registry
+		r.registerUnmarshalHook(LocalesHook())
+		person := hookPtrBaseLocalePerson{
+			Name:       nil,
+			NameLocale: &hookLocales{EnUS: "Hello"},
+		}
+		err := r.applyUnmarshalHooks(reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.NotNil(t, person.Name)
+		require.Equal(t, "Hello", *person.Name)
+	})
+
+	// --- Both directions: mutual zero-value preservation ---
+
+	t.Run("marshal: both non-nil with zero values — neither overwritten", func(t *testing.T) {
+		// Both base and locale are explicitly provided with empty/zero values.
+		// Neither should overwrite the other.
+		var r registry
+		r.registerMarshalHook(LocalesHook())
+		person := hookPtrBaseLocalePerson{
+			Name:       strPtr(""),
+			NameLocale: &hookLocales{EnUS: "", EnAU: ""},
+		}
+		err := r.applyMarshalHooks(reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Equal(t, "", *person.Name, "base should remain empty")
+		require.Equal(t, "", person.NameLocale.EnUS, "locale should remain empty")
+		require.Equal(t, "", person.NameLocale.EnAU, "locale should remain empty")
+	})
+}
+
+// TestMarshalZeroValueFieldsPreserved verifies that zero-value struct fields
+// are included in Cypher parameters (not silently dropped).
+// This tests scope.go's bindFieldsFrom which skips f.IsZero() fields.
+func TestMarshalZeroValueFieldsPreserved(t *testing.T) {
+	c := internal.NewCypherClient()
+	person := hookPerson{Name: ""}
+	cy, err := c.
+		Create(db.Node(db.Qual(&person, "n"))).
+		Return(&person).
+		Compile()
+	require.NoError(t, err)
+	_, exists := cy.Parameters["n_name"]
+	require.True(t, exists,
+		"zero-value field should still be included in Cypher parameters")
 }
