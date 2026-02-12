@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rlch/neogo/db"
 	"github.com/rlch/neogo/internal"
 )
@@ -241,6 +243,64 @@ func TestCreate(t *testing.T) {
 					"n": reflect.ValueOf(&n),
 				},
 			})
+		})
+
+		t.Run("Create node with zero-value bool field includes it in parameters", func(t *testing.T) {
+			// Found: false is a valid value — "this person was NOT found".
+			// It must appear in Cypher as {found: $n_found} not be silently dropped.
+			c := internal.NewCypherClient()
+			n := Person{
+				Name:  "Andy",
+				Found: false,
+			}
+			cy, err := c.
+				Create(db.Node(db.Qual(&n, "n"))).
+				Return(&n).
+				Compile()
+
+			require.NoError(t, err)
+			require.Contains(t, cy.Parameters, "n_found",
+				"zero-value bool field (false) should be included in Cypher parameters")
+			require.Equal(t, false, cy.Parameters["n_found"])
+		})
+
+		t.Run("Create node with zero-value int field includes it in parameters", func(t *testing.T) {
+			// Age: 0 is a valid value (e.g. newborn).
+			// It must appear in Cypher as {age: $n_age} not be silently dropped.
+			c := internal.NewCypherClient()
+			n := Person{
+				Name: "Baby",
+				Age:  0,
+			}
+			cy, err := c.
+				Create(db.Node(db.Qual(&n, "n"))).
+				Return(&n).
+				Compile()
+
+			require.NoError(t, err)
+			require.Contains(t, cy.Parameters, "n_age",
+				"zero-value int field (0) should be included in Cypher parameters")
+			require.Equal(t, 0, cy.Parameters["n_age"])
+		})
+
+		t.Run("Create node with empty string field includes it in parameters", func(t *testing.T) {
+			// Name: "" could mean "explicitly cleared".
+			// With non-pointer string there is ambiguity, but the ORM should
+			// include all fields that the caller provided on the struct.
+			c := internal.NewCypherClient()
+			n := Person{
+				Name:     "",
+				Position: "Developer",
+			}
+			cy, err := c.
+				Create(db.Node(db.Qual(&n, "n"))).
+				Return(&n).
+				Compile()
+
+			require.NoError(t, err)
+			require.Contains(t, cy.Parameters, "n_name",
+				"zero-value string field should be included in Cypher parameters")
+			require.Equal(t, "", cy.Parameters["n_name"])
 		})
 
 		t.Run("Create multiple nodes with a parameter for their properties", func(t *testing.T) {
