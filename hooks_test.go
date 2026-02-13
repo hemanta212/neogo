@@ -1,6 +1,7 @@
 package neogo
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -377,6 +378,135 @@ func TestLocalesHookZeroValuePreservation(t *testing.T) {
 		require.Equal(t, "", *person.Name, "base should remain empty")
 		require.Equal(t, "", person.NameLocale.EnUS, "locale should remain empty")
 		require.Equal(t, "", person.NameLocale.EnAU, "locale should remain empty")
+	})
+}
+
+// hookHiddenLocalePerson simulates the real-world case where the locale struct
+// is tagged json:"-" and therefore invisible to json.Marshal.
+type hookHiddenLocalePerson struct {
+	Name       string       `json:"name"`
+	NameLocale *hookLocales `json:"-"`
+}
+
+func TestFlattenLocaleFields(t *testing.T) {
+	t.Run("flattens non-nil locale into map", func(t *testing.T) {
+		person := hookHiddenLocalePerson{
+			Name:       "Hi",
+			NameLocale: &hookLocales{EnUS: "US", EnAU: "AU"},
+		}
+		// JSON round-trip: NameLocale is json:"-" so it won't appear.
+		bs, err := json.Marshal(person)
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(bs, &m))
+
+		flattenLocaleFields(reflect.ValueOf(person), m)
+		require.Equal(t, "US", m["name_enUS"])
+		require.Equal(t, "AU", m["name_enAU"])
+	})
+
+	t.Run("skips nil locale pointer", func(t *testing.T) {
+		person := hookHiddenLocalePerson{
+			Name:       "Hi",
+			NameLocale: nil,
+		}
+		bs, err := json.Marshal(person)
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(bs, &m))
+
+		flattenLocaleFields(reflect.ValueOf(person), m)
+		_, hasUS := m["name_enUS"]
+		_, hasAU := m["name_enAU"]
+		require.False(t, hasUS, "nil locale should not produce flat keys")
+		require.False(t, hasAU, "nil locale should not produce flat keys")
+	})
+
+	t.Run("skips zero-value locale fields", func(t *testing.T) {
+		person := hookHiddenLocalePerson{
+			Name:       "Hi",
+			NameLocale: &hookLocales{EnUS: "US", EnAU: ""},
+		}
+		bs, err := json.Marshal(person)
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(bs, &m))
+
+		flattenLocaleFields(reflect.ValueOf(person), m)
+		require.Equal(t, "US", m["name_enUS"])
+		_, hasAU := m["name_enAU"]
+		require.False(t, hasAU, "zero-value locale field should not be flattened")
+	})
+
+	t.Run("works with value locale struct", func(t *testing.T) {
+		person := hookLocalizedPerson{
+			Name:       "Hi",
+			NameLocale: hookLocales{EnUS: "US", EnAU: "AU"},
+		}
+		bs, err := json.Marshal(person)
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(bs, &m))
+
+		flattenLocaleFields(reflect.ValueOf(person), m)
+		require.Equal(t, "US", m["name_enUS"])
+		require.Equal(t, "AU", m["name_enAU"])
+	})
+
+	t.Run("handles pointer base field", func(t *testing.T) {
+		person := hookPtrBaseLocalePerson{
+			Name:       strPtr("Hi"),
+			NameLocale: &hookLocales{EnUS: "US"},
+		}
+		bs, err := json.Marshal(person)
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(bs, &m))
+
+		flattenLocaleFields(reflect.ValueOf(person), m)
+		require.Equal(t, "US", m["name_enUS"])
+	})
+}
+
+func TestCanonicalizeParamsFlattensLocales(t *testing.T) {
+	t.Run("pre-populated locale struct", func(t *testing.T) {
+		person := hookHiddenLocalePerson{
+			Name:       "Hello",
+			NameLocale: &hookLocales{EnUS: "US Val", EnAU: "AU Val"},
+		}
+		result, err := canonicalizeParams(map[string]any{"props": person}, nil)
+		require.NoError(t, err)
+
+		propsRaw, ok := result["props"]
+		require.True(t, ok, "result should contain 'props' key")
+		props, ok := propsRaw.(map[string]any)
+		require.True(t, ok, "props should be map[string]any")
+		require.Equal(t, "Hello", props["name"])
+		require.Equal(t, "US Val", props["name_enUS"])
+		require.Equal(t, "AU Val", props["name_enAU"])
+	})
+
+	t.Run("marshal hook populates locale from base on struct value", func(t *testing.T) {
+		// Simulates real UpdateSkill flow: struct passed by value with only
+		// base field set, locale is nil. The marshal hook must populate locale,
+		// then flattenLocaleFields must inject flat keys.
+		var r registry
+		r.registerMarshalHook(LocalesHook())
+		person := hookHiddenLocalePerson{
+			Name:       "Hello",
+			NameLocale: nil, // hook should fill this
+		}
+		result, err := canonicalizeParams(
+			map[string]any{"props": person},
+			r.applyMarshalHooks,
+		)
+		require.NoError(t, err)
+
+		props, ok := result["props"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "Hello", props["name"])
+		require.Equal(t, "Hello", props["name_enUS"],
+			"marshal hook should populate EnUS from base, then flatten should inject it")
 	})
 }
 

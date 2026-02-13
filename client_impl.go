@@ -546,14 +546,25 @@ func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Va
 			canon[k] = nil
 			continue
 		}
-		if applyMarshalHooks != nil {
-			if err := applyMarshalHooks(reflect.ValueOf(v)); err != nil {
-				return nil, fmt.Errorf("cannot apply marshal hooks for param %s: %w", k, err)
-			}
-		}
-		vv := reflect.ValueOf(v)
+		// Ensure value is addressable so marshal hooks can modify struct
+		// fields. When v is a struct value (not pointer), reflect.ValueOf(v)
+		// produces a non-addressable copy whose fields cannot be Set().
+		rv := reflect.ValueOf(v)
+		vv := rv
 		for vv.Kind() == reflect.Ptr {
 			vv = vv.Elem()
+		}
+		if vv.Kind() == reflect.Struct && !vv.CanSet() {
+			addr := reflect.New(vv.Type())
+			addr.Elem().Set(vv)
+			rv = addr
+			vv = addr.Elem()
+			v = addr.Interface()
+		}
+		if applyMarshalHooks != nil {
+			if err := applyMarshalHooks(rv); err != nil {
+				return nil, fmt.Errorf("cannot apply marshal hooks for param %s: %w", k, err)
+			}
 		}
 		switch vv.Kind() {
 		case reflect.Slice:
@@ -575,10 +586,72 @@ func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Va
 			if err := json.Unmarshal(bytes, &js); err != nil {
 				return nil, fmt.Errorf("cannot unmarshal map: %w", err)
 			}
+			if vv.Kind() == reflect.Struct {
+				if jsMap, ok := js.(map[string]any); ok {
+					flattenLocaleFields(vv, jsMap)
+				}
+			}
 			canon[k] = js
 		default:
 			canon[k] = v
 		}
 	}
 	return canon, nil
+}
+
+// flattenLocaleFields walks a struct's locale fields (detected by Locale/Locales
+// suffix) and injects their inner values as flat keys into the serialized map.
+// This recovers locale data lost during json.Marshal (fields tagged `json:"-"`).
+func flattenLocaleFields(v reflect.Value, m map[string]any) {
+	if v.Kind() != reflect.Struct {
+		return
+	}
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		// Recurse into embedded (anonymous) structs.
+		if f.Anonymous {
+			ev := v.Field(i)
+			for ev.Kind() == reflect.Ptr {
+				if ev.IsNil() {
+					break
+				}
+				ev = ev.Elem()
+			}
+			if ev.Kind() == reflect.Struct {
+				flattenLocaleFields(ev, m)
+			}
+			continue
+		}
+		baseName, ok := localeBaseName(f.Name)
+		if !ok {
+			continue
+		}
+		fv := v.Field(i)
+		// Unwrap pointer.
+		for fv.Kind() == reflect.Ptr {
+			if fv.IsNil() {
+				break
+			}
+			fv = fv.Elem()
+		}
+		if fv.Kind() != reflect.Struct {
+			continue
+		}
+		// Walk inner locale struct fields and inject non-zero values.
+		lt := fv.Type()
+		prefix := lcFirst(baseName)
+		for j := 0; j < lt.NumField(); j++ {
+			lf := lt.Field(j)
+			if lf.PkgPath != "" {
+				continue
+			}
+			lfv := fv.Field(j)
+			if lfv.IsZero() {
+				continue
+			}
+			flatKey := prefix + "_" + lcFirst(lf.Name)
+			m[flatKey] = lfv.Interface()
+		}
+	}
 }
