@@ -638,7 +638,22 @@ func flattenLocaleFields(v reflect.Value, m map[string]any) {
 		if fv.Kind() != reflect.Struct {
 			continue
 		}
-		// Walk inner locale struct fields: emit value or nil (to clear in Neo4j).
+		// Determine if the base field is zero. When base is zero/empty
+		// (e.g. figure=""), we emit nil for all locale fields to clear
+		// them in Neo4j. When base is non-zero (e.g. content="Hello"),
+		// we only emit locale fields that were actually set (non-zero),
+		// preserving other clusters' locale data.
+		baseIsZero := true
+		if bf, ok := t.FieldByName(baseName); ok {
+			bv := v.FieldByIndex(bf.Index)
+			for bv.Kind() == reflect.Ptr {
+				if bv.IsNil() {
+					break
+				}
+				bv = bv.Elem()
+			}
+			baseIsZero = bv.IsZero()
+		}
 		lt := fv.Type()
 		prefix := lcFirst(baseName)
 		for j := 0; j < lt.NumField(); j++ {
@@ -647,12 +662,21 @@ func flattenLocaleFields(v reflect.Value, m map[string]any) {
 				continue
 			}
 			lfv := fv.Field(j)
-			flatKey := prefix + "_" + lcFirst(lf.Name)
 			if lfv.IsZero() {
-				m[flatKey] = nil
-			} else {
-				m[flatKey] = lfv.Interface()
+				if baseIsZero {
+					// Base is empty → explicitly clearing: emit nil to
+					// remove the locale property from Neo4j.
+					flatKey := prefix + "_" + lcFirst(lf.Name)
+					m[flatKey] = nil
+				}
+				// Base is non-zero but this locale field wasn't set
+				// (different cluster's field) → skip to preserve it.
+				continue
 			}
+			flatKey := prefix + "_" + lcFirst(lf.Name)
+			m[flatKey] = lfv.Interface()
 		}
 	}
 }
+
+
