@@ -153,8 +153,14 @@ func (r *registry) applyUnmarshalHooksRecursive(
 			if ft.PkgPath != "" {
 				continue
 			}
-			// Nested fields don't have a corresponding raw source, pass nil.
-			if err := r.applyUnmarshalHooksRecursive(nil, fv, seen); err != nil {
+			// Embedded (anonymous) fields share the same raw source as the parent
+			// struct — flat DB properties map to promoted fields.
+			// Non-embedded fields don't have a corresponding raw source, pass nil.
+			fieldFrom := any(nil)
+			if ft.Anonymous {
+				fieldFrom = from
+			}
+			if err := r.applyUnmarshalHooksRecursive(fieldFrom, fv, seen); err != nil {
 				return err
 			}
 		}
