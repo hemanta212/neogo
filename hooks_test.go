@@ -299,9 +299,8 @@ func TestLocalesHook(t *testing.T) {
 func TestLocalesHookZeroValuePreservation(t *testing.T) {
 	// --- Marshal direction: base -> locale ---
 
-	t.Run("marshal: non-nil pointer locale with empty fields NOT overwritten from base", func(t *testing.T) {
-		// NameLocale is explicitly &hookLocales{EnUS:"", EnAU:""} — caller said "all locales are empty".
-		// The hook must NOT overwrite these empty strings with base value.
+	t.Run("marshal: non-nil pointer locale with empty fields overwritten from base", func(t *testing.T) {
+		// Base is authoritative during marshal: base="Hello" always overwrites locale.
 		var r registry
 		r.registerMarshalHook(LocalesHook())
 		person := hookNilableLocalePerson{
@@ -310,10 +309,25 @@ func TestLocalesHookZeroValuePreservation(t *testing.T) {
 		}
 		err := r.applyMarshalHooks(reflect.ValueOf(&person))
 		require.NoError(t, err)
-		require.Equal(t, "", person.NameLocale.EnUS,
-			"explicitly provided empty locale field should not be overwritten from base")
+		require.Equal(t, "Hello", person.NameLocale.EnUS,
+			"base should overwrite locale during marshal")
+	})
+
+	t.Run("marshal: non-zero base overwrites stale non-zero locale", func(t *testing.T) {
+		// Base changed from "Old" to "Updated" but locale still has stale data.
+		// Marshal hook must overwrite stale locale with new base value.
+		var r registry
+		r.registerMarshalHook(LocalesHook())
+		person := hookNilableLocalePerson{
+			Name:       "Updated",
+			NameLocale: &hookLocales{EnUS: "Stale", EnAU: "Stale"},
+		}
+		err := r.applyMarshalHooks(reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Equal(t, "Updated", person.NameLocale.EnUS,
+			"stale locale should be overwritten from base")
 		require.Equal(t, "", person.NameLocale.EnAU,
-			"explicitly provided empty locale field should not be overwritten from base")
+			"non-preferred locale field should be zeroed")
 	})
 
 	t.Run("marshal: nil pointer locale gets filled from base", func(t *testing.T) {
@@ -364,20 +378,48 @@ func TestLocalesHookZeroValuePreservation(t *testing.T) {
 
 	// --- Both directions: mutual zero-value preservation ---
 
-	t.Run("marshal: both non-nil with zero values — neither overwritten", func(t *testing.T) {
-		// Both base and locale are explicitly provided with empty/zero values.
-		// Neither should overwrite the other.
+	t.Run("marshal: both non-nil with zero values — locale zeroed from base", func(t *testing.T) {
+		// Base is zero (empty string ptr) → locale fields get zeroed out.
 		var r registry
 		r.registerMarshalHook(LocalesHook())
 		person := hookPtrBaseLocalePerson{
 			Name:       strPtr(""),
-			NameLocale: &hookLocales{EnUS: "", EnAU: ""},
+			NameLocale: &hookLocales{EnUS: "stale", EnAU: "stale"},
 		}
 		err := r.applyMarshalHooks(reflect.ValueOf(&person))
 		require.NoError(t, err)
 		require.Equal(t, "", *person.Name, "base should remain empty")
-		require.Equal(t, "", person.NameLocale.EnUS, "locale should remain empty")
-		require.Equal(t, "", person.NameLocale.EnAU, "locale should remain empty")
+		require.Equal(t, "", person.NameLocale.EnUS, "locale should be zeroed when base is zero")
+		require.Equal(t, "", person.NameLocale.EnAU, "locale should be zeroed when base is zero")
+	})
+
+	t.Run("marshal: base zero with non-nil locale — locale gets zeroed", func(t *testing.T) {
+		// Base has value "" (zero for string), locale has stale data → locale must be cleared.
+		var r registry
+		r.registerMarshalHook(LocalesHook())
+		person := hookLocalizedPerson{
+			Name:       "",
+			NameLocale: hookLocales{EnUS: "stale-US", EnAU: "stale-AU"},
+		}
+		err := r.applyMarshalHooks(reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Equal(t, "", person.NameLocale.EnUS, "stale locale should be zeroed when base is zero")
+		require.Equal(t, "", person.NameLocale.EnAU, "stale locale should be zeroed when base is zero")
+	})
+
+	t.Run("marshal: nil pointer base — locale untouched", func(t *testing.T) {
+		// Base is nil pointer → "not provided", locale must not be touched.
+		var r registry
+		r.registerMarshalHook(LocalesHook())
+		person := hookPtrBaseLocalePerson{
+			Name:       nil,
+			NameLocale: &hookLocales{EnUS: "existing", EnAU: "data"},
+		}
+		err := r.applyMarshalHooks(reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Nil(t, person.Name, "nil base should stay nil")
+		require.Equal(t, "existing", person.NameLocale.EnUS, "locale should be untouched when base is nil pointer")
+		require.Equal(t, "data", person.NameLocale.EnAU, "locale should be untouched when base is nil pointer")
 	})
 }
 
@@ -422,7 +464,7 @@ func TestFlattenLocaleFields(t *testing.T) {
 		require.False(t, hasAU, "nil locale should not produce flat keys")
 	})
 
-	t.Run("skips zero-value locale fields", func(t *testing.T) {
+	t.Run("emits nil for zero-value locale fields", func(t *testing.T) {
 		person := hookHiddenLocalePerson{
 			Name:       "Hi",
 			NameLocale: &hookLocales{EnUS: "US", EnAU: ""},
@@ -434,8 +476,9 @@ func TestFlattenLocaleFields(t *testing.T) {
 
 		flattenLocaleFields(reflect.ValueOf(person), m)
 		require.Equal(t, "US", m["name_enUS"])
-		_, hasAU := m["name_enAU"]
-		require.False(t, hasAU, "zero-value locale field should not be flattened")
+		auVal, hasAU := m["name_enAU"]
+		require.True(t, hasAU, "zero-value locale field should be present in map")
+		require.Nil(t, auVal, "zero-value locale field should be nil to clear in Neo4j")
 	})
 
 	t.Run("works with value locale struct", func(t *testing.T) {

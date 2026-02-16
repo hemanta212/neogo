@@ -56,6 +56,9 @@ func resolveKeys(selector LocaleSelector) []string {
 }
 
 // localesMarshalHook syncs base → locale before serialization.
+// If base is nil pointer → skip (field not provided).
+// If base is zero → zero out all locale fields.
+// If base is non-zero → set locale from base.
 func localesMarshalHook(value reflect.Value, preferredKeys []string) error {
 	value = unwindValue(value)
 	if !value.IsValid() || value.Kind() != reflect.Struct {
@@ -78,21 +81,19 @@ func localesMarshalHook(value reflect.Value, preferredKeys []string) error {
 		}
 		localeValue := value.Field(i)
 		baseValue := value.FieldByIndex(baseField.Index)
-		if !baseValue.CanSet() {
-			continue
-		}
+
+		// Unwrap base pointer. If nil → field not provided, skip entirely.
 		if baseValue.Kind() == reflect.Ptr {
 			if baseValue.IsNil() {
-				if localeValue.IsZero() {
-					continue
-				}
-				baseValue.Set(reflect.New(baseValue.Type().Elem()))
+				continue
 			}
 			baseValue = baseValue.Elem()
 		}
+
+		// Ensure locale is allocated and unwrapped.
 		if localeValue.Kind() == reflect.Ptr {
 			if localeValue.IsNil() {
-				if baseValue.IsZero() {
+				if !localeValue.CanSet() {
 					continue
 				}
 				localeValue.Set(reflect.New(localeValue.Type().Elem()))
@@ -102,21 +103,26 @@ func localesMarshalHook(value reflect.Value, preferredKeys []string) error {
 		if localeValue.Kind() != reflect.Struct {
 			continue
 		}
-		if baseValue.IsZero() {
-			if localeValue.IsZero() {
-				continue
-			}
-			if setBaseFromLocale(baseValue, localeValue, preferredKeys) {
-				continue
-			}
-			continue
-		}
-		if localeValue.IsZero() {
+
+		// Base → locale, unconditionally. Always zero first to clear stale data,
+		// then set from base if non-zero.
+		zeroOutLocale(localeValue)
+		if !baseValue.IsZero() {
 			setLocaleFromBase(baseValue, localeValue, preferredKeys)
-			continue
 		}
 	}
 	return nil
+}
+
+// zeroOutLocale sets all exported fields of a locale struct to their zero values.
+func zeroOutLocale(localeValue reflect.Value) {
+	for i := 0; i < localeValue.NumField(); i++ {
+		field := localeValue.Field(i)
+		if !field.CanSet() {
+			continue
+		}
+		field.Set(reflect.Zero(field.Type()))
+	}
 }
 
 // localesUnmarshalHook extracts flat locale keys from the raw props map and
@@ -156,8 +162,10 @@ func localesUnmarshalHook(from any, to reflect.Value, preferredKeys []string) er
 		}
 
 		// Phase 2: Sync locale → base (unmarshal direction).
-		// Unwrap pointers for base.
+		// Unwrap pointers for base. Track whether base pointer was non-nil
+		// (meaning "explicitly provided" — don't overwrite even if zero).
 		bv := baseValue
+		baseExplicit := false
 		if bv.Kind() == reflect.Ptr {
 			if bv.IsNil() {
 				lv := localeValue
@@ -171,6 +179,8 @@ func localesUnmarshalHook(from any, to reflect.Value, preferredKeys []string) er
 					continue
 				}
 				baseValue.Set(reflect.New(baseValue.Type().Elem()))
+			} else {
+				baseExplicit = true
 			}
 			bv = baseValue.Elem()
 		}
@@ -188,6 +198,10 @@ func localesUnmarshalHook(from any, to reflect.Value, preferredKeys []string) er
 		// If flat keys were extracted, locale is authoritative - always override base.
 		if flatKeysFound {
 			setBaseFromLocale(bv, lv, preferredKeys)
+			continue
+		}
+		// If base was a non-nil pointer, it was explicitly provided — don't overwrite.
+		if baseExplicit {
 			continue
 		}
 		// Otherwise, standard sync: only set base from locale when base is zero.

@@ -638,7 +638,7 @@ func flattenLocaleFields(v reflect.Value, m map[string]any) {
 		if fv.Kind() != reflect.Struct {
 			continue
 		}
-		// Walk inner locale struct fields and inject non-zero values.
+		// Walk inner locale struct fields: emit value or nil (to clear in Neo4j).
 		lt := fv.Type()
 		prefix := lcFirst(baseName)
 		for j := 0; j < lt.NumField(); j++ {
@@ -647,11 +647,12 @@ func flattenLocaleFields(v reflect.Value, m map[string]any) {
 				continue
 			}
 			lfv := fv.Field(j)
-			if lfv.IsZero() {
-				continue
-			}
 			flatKey := prefix + "_" + lcFirst(lf.Name)
-			m[flatKey] = lfv.Interface()
+			if lfv.IsZero() {
+				m[flatKey] = nil
+			} else {
+				m[flatKey] = lfv.Interface()
+			}
 		}
 	}
 }
