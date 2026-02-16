@@ -55,6 +55,9 @@ func New(
 	for _, h := range cfg.UnmarshalHooks {
 		d.registerUnmarshalHook(h)
 	}
+	if len(cfg.LocalePreferredKeys) > 0 {
+		d.localePreferredKeys = cfg.LocalePreferredKeys
+	}
 
 	return &d, nil
 }

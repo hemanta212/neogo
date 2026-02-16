@@ -36,6 +36,7 @@ type Config struct {
 	Types                []any
 	MarshalHooks         []MarshalHook
 	UnmarshalHooks       []UnmarshalHook
+	LocalePreferredKeys  []string
 }
 
 // Configurer is a function that configures a neogo Config.
@@ -78,6 +79,17 @@ func WithMarshalHook(hook MarshalHook) Configurer {
 func WithUnmarshalHook(hook UnmarshalHook) Configurer {
 	return func(c *Config) {
 		c.UnmarshalHooks = append(c.UnmarshalHooks, hook)
+	}
+}
+
+// WithLocales registers marshal/unmarshal hooks and locale preferred keys
+// from a single LocaleSelector. This is the recommended way to configure
+// locale support — everything is derived from the selector.
+func WithLocales(selector LocaleSelector) Configurer {
+	return func(c *Config) {
+		c.MarshalHooks = append(c.MarshalHooks, LocalesHookWithSelector(selector))
+		c.UnmarshalHooks = append(c.UnmarshalHooks, LocalesUnmarshalHookWithSelector(selector))
+		c.LocalePreferredKeys = selector.PreferredKeys()
 	}
 }
 

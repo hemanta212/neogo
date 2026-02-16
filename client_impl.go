@@ -265,7 +265,7 @@ func (c *runnerImpl) run(
 	if err != nil {
 		return nil, fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.applyMarshalHooks)
+	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.applyMarshalHooks, c.localePreferredKeys)
 	if err != nil {
 		return nil, fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -320,7 +320,7 @@ func (c *runnerImpl) StreamWithParams(ctx context.Context, params map[string]any
 	if err != nil {
 		return fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.applyMarshalHooks)
+	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.applyMarshalHooks, c.localePreferredKeys)
 	if err != nil {
 		return fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -536,7 +536,7 @@ func (c *runnerImpl) executeTransaction(
 	return
 }
 
-func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Value) error) (map[string]any, error) {
+func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Value) error, localePreferredKeys []string) (map[string]any, error) {
 	canon := make(map[string]any, len(params))
 	if len(params) == 0 {
 		return canon, nil
@@ -588,7 +588,7 @@ func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Va
 			}
 			if vv.Kind() == reflect.Struct {
 				if jsMap, ok := js.(map[string]any); ok {
-					flattenLocaleFields(vv, jsMap)
+					flattenLocaleFields(vv, jsMap, localePreferredKeys)
 				}
 			}
 			canon[k] = js
@@ -602,7 +602,16 @@ func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Va
 // flattenLocaleFields walks a struct's locale fields (detected by Locale/Locales
 // suffix) and injects their inner values as flat keys into the serialized map.
 // This recovers locale data lost during json.Marshal (fields tagged `json:"-"`).
-func flattenLocaleFields(v reflect.Value, m map[string]any) {
+//
+// When preferredKeys is set (e.g. ["EnAU"]), only the first preferred key is
+// emitted — even when its value is zero (empty string). This ensures that when
+// a base field is explicitly set to "", the corresponding locale property is
+// written as "" to Neo4j. Non-preferred keys are never emitted since each
+// cluster has its own separate database.
+//
+// When preferredKeys is nil/empty, all non-zero locale fields are emitted
+// (fallback for tests or configurations without locale preference).
+func flattenLocaleFields(v reflect.Value, m map[string]any, preferredKeys []string) {
 	if v.Kind() != reflect.Struct {
 		return
 	}
@@ -619,7 +628,7 @@ func flattenLocaleFields(v reflect.Value, m map[string]any) {
 				ev = ev.Elem()
 			}
 			if ev.Kind() == reflect.Struct {
-				flattenLocaleFields(ev, m)
+				flattenLocaleFields(ev, m, preferredKeys)
 			}
 			continue
 		}
@@ -638,43 +647,32 @@ func flattenLocaleFields(v reflect.Value, m map[string]any) {
 		if fv.Kind() != reflect.Struct {
 			continue
 		}
-		// Determine if the base field is zero. When base is zero/empty
-		// (e.g. figure=""), we emit nil for all locale fields to clear
-		// them in Neo4j. When base is non-zero (e.g. content="Hello"),
-		// we only emit locale fields that were actually set (non-zero),
-		// preserving other clusters' locale data.
-		baseIsZero := true
-		if bf, ok := t.FieldByName(baseName); ok {
-			bv := v.FieldByIndex(bf.Index)
-			for bv.Kind() == reflect.Ptr {
-				if bv.IsNil() {
-					break
-				}
-				bv = bv.Elem()
-			}
-			baseIsZero = bv.IsZero()
-		}
-		lt := fv.Type()
 		prefix := lcFirst(baseName)
-		for j := 0; j < lt.NumField(); j++ {
-			lf := lt.Field(j)
-			if lf.PkgPath != "" {
-				continue
+		if len(preferredKeys) > 0 {
+			// Emit only the first preferred key. Even if its value is
+			// zero (e.g. ""), it gets written so that clearing a base
+			// field also clears the locale property.
+			key := preferredKeys[0]
+			field := fv.FieldByName(key)
+			if field.IsValid() {
+				flatKey := prefix + "_" + lcFirst(key)
+				m[flatKey] = field.Interface()
 			}
-			lfv := fv.Field(j)
-			if lfv.IsZero() {
-				if baseIsZero {
-					// Base is empty → explicitly clearing: emit nil to
-					// remove the locale property from Neo4j.
-					flatKey := prefix + "_" + lcFirst(lf.Name)
-					m[flatKey] = nil
+		} else {
+			// Fallback: emit all non-zero locale fields.
+			lt := fv.Type()
+			for j := 0; j < lt.NumField(); j++ {
+				lf := lt.Field(j)
+				if lf.PkgPath != "" {
+					continue
 				}
-				// Base is non-zero but this locale field wasn't set
-				// (different cluster's field) → skip to preserve it.
-				continue
+				lfv := fv.Field(j)
+				if lfv.IsZero() {
+					continue
+				}
+				flatKey := prefix + "_" + lcFirst(lf.Name)
+				m[flatKey] = lfv.Interface()
 			}
-			flatKey := prefix + "_" + lcFirst(lf.Name)
-			m[flatKey] = lfv.Interface()
 		}
 	}
 }

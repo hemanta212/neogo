@@ -48,11 +48,12 @@ type MarshalHook = Hook
 type UnmarshalHook func(from any, to reflect.Value) error
 
 type registry struct {
-	abstractNodes  []any
-	nodes          []any
-	relationships  []any
-	marshalHooks   []MarshalHook
-	unmarshalHooks []UnmarshalHook
+	abstractNodes       []any
+	nodes               []any
+	relationships       []any
+	marshalHooks        []MarshalHook
+	unmarshalHooks      []UnmarshalHook
+	localePreferredKeys []string
 }
 
 func (r *registry) registerTypes(types ...any) {

@@ -442,7 +442,7 @@ func TestFlattenLocaleFields(t *testing.T) {
 		var m map[string]any
 		require.NoError(t, json.Unmarshal(bs, &m))
 
-		flattenLocaleFields(reflect.ValueOf(person), m)
+		flattenLocaleFields(reflect.ValueOf(person), m, nil)
 		require.Equal(t, "US", m["name_enUS"])
 		require.Equal(t, "AU", m["name_enAU"])
 	})
@@ -457,16 +457,16 @@ func TestFlattenLocaleFields(t *testing.T) {
 		var m map[string]any
 		require.NoError(t, json.Unmarshal(bs, &m))
 
-		flattenLocaleFields(reflect.ValueOf(person), m)
+		flattenLocaleFields(reflect.ValueOf(person), m, nil)
 		_, hasUS := m["name_enUS"]
 		_, hasAU := m["name_enAU"]
 		require.False(t, hasUS, "nil locale should not produce flat keys")
 		require.False(t, hasAU, "nil locale should not produce flat keys")
 	})
 
-	t.Run("skips zero locale fields when base is non-zero", func(t *testing.T) {
-		// When base is "Hi" (non-zero), zero locale fields (EnAU="") should
-		// be skipped to preserve other clusters' data in Neo4j.
+	t.Run("skips zero-value locale fields", func(t *testing.T) {
+		// Zero locale fields are always skipped. Each cluster has its own
+		// DB so we only write base + current cluster's locale key.
 		person := hookHiddenLocalePerson{
 			Name:       "Hi",
 			NameLocale: &hookLocales{EnUS: "US", EnAU: ""},
@@ -476,31 +476,10 @@ func TestFlattenLocaleFields(t *testing.T) {
 		var m map[string]any
 		require.NoError(t, json.Unmarshal(bs, &m))
 
-		flattenLocaleFields(reflect.ValueOf(person), m)
+		flattenLocaleFields(reflect.ValueOf(person), m, nil)
 		require.Equal(t, "US", m["name_enUS"])
 		_, hasAU := m["name_enAU"]
-		require.False(t, hasAU, "zero locale field should be skipped when base is non-zero")
-	})
-
-	t.Run("emits nil for zero locale fields when base is zero", func(t *testing.T) {
-		// When base is "" (zero/empty), user is explicitly clearing the field.
-		// All locale fields should be emitted as nil to clear them in Neo4j.
-		person := hookHiddenLocalePerson{
-			Name:       "",
-			NameLocale: &hookLocales{EnUS: "", EnAU: ""},
-		}
-		bs, err := json.Marshal(person)
-		require.NoError(t, err)
-		var m map[string]any
-		require.NoError(t, json.Unmarshal(bs, &m))
-
-		flattenLocaleFields(reflect.ValueOf(person), m)
-		usVal, hasUS := m["name_enUS"]
-		require.True(t, hasUS, "zero locale field should be emitted when base is zero")
-		require.Nil(t, usVal, "should emit nil to clear in Neo4j")
-		auVal, hasAU := m["name_enAU"]
-		require.True(t, hasAU, "zero locale field should be emitted when base is zero")
-		require.Nil(t, auVal, "should emit nil to clear in Neo4j")
+		require.False(t, hasAU, "zero locale field should not be emitted")
 	})
 
 	t.Run("works with value locale struct", func(t *testing.T) {
@@ -513,7 +492,7 @@ func TestFlattenLocaleFields(t *testing.T) {
 		var m map[string]any
 		require.NoError(t, json.Unmarshal(bs, &m))
 
-		flattenLocaleFields(reflect.ValueOf(person), m)
+		flattenLocaleFields(reflect.ValueOf(person), m, nil)
 		require.Equal(t, "US", m["name_enUS"])
 		require.Equal(t, "AU", m["name_enAU"])
 	})
@@ -528,12 +507,28 @@ func TestFlattenLocaleFields(t *testing.T) {
 		var m map[string]any
 		require.NoError(t, json.Unmarshal(bs, &m))
 
-		flattenLocaleFields(reflect.ValueOf(person), m)
+		flattenLocaleFields(reflect.ValueOf(person), m, nil)
 		require.Equal(t, "US", m["name_enUS"])
 	})
 
-	t.Run("clears locale when pointer base is empty string", func(t *testing.T) {
-		// Simulates figure="" in UpdateShortQuestionParams
+	t.Run("with preferred keys emits only preferred field", func(t *testing.T) {
+		person := hookHiddenLocalePerson{
+			Name:       "Hi",
+			NameLocale: &hookLocales{EnUS: "", EnAU: "AU Val"},
+		}
+		bs, err := json.Marshal(person)
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(bs, &m))
+
+		flattenLocaleFields(reflect.ValueOf(person), m, []string{"EnAU", "EnUS"})
+		require.Equal(t, "AU Val", m["name_enAU"])
+		_, hasUS := m["name_enUS"]
+		require.False(t, hasUS, "non-preferred key should not be emitted")
+	})
+
+	t.Run("with preferred keys emits empty string when base is empty", func(t *testing.T) {
+		// Simulates figure="" with AU cluster: preferred key should be ""
 		person := hookPtrBaseLocalePerson{
 			Name:       strPtr(""),
 			NameLocale: &hookLocales{EnUS: "", EnAU: ""},
@@ -543,13 +538,12 @@ func TestFlattenLocaleFields(t *testing.T) {
 		var m map[string]any
 		require.NoError(t, json.Unmarshal(bs, &m))
 
-		flattenLocaleFields(reflect.ValueOf(person), m)
-		usVal, hasUS := m["name_enUS"]
-		require.True(t, hasUS, "should emit nil when base ptr is empty string")
-		require.Nil(t, usVal)
+		flattenLocaleFields(reflect.ValueOf(person), m, []string{"EnAU", "EnUS"})
 		auVal, hasAU := m["name_enAU"]
-		require.True(t, hasAU, "should emit nil when base ptr is empty string")
-		require.Nil(t, auVal)
+		require.True(t, hasAU, "preferred key should be emitted even when empty")
+		require.Equal(t, "", auVal, "should emit empty string, not nil")
+		_, hasUS := m["name_enUS"]
+		require.False(t, hasUS, "non-preferred key should not be emitted")
 	})
 }
 
@@ -559,7 +553,7 @@ func TestCanonicalizeParamsFlattensLocales(t *testing.T) {
 			Name:       "Hello",
 			NameLocale: &hookLocales{EnUS: "US Val", EnAU: "AU Val"},
 		}
-		result, err := canonicalizeParams(map[string]any{"props": person}, nil)
+		result, err := canonicalizeParams(map[string]any{"props": person}, nil, nil)
 		require.NoError(t, err)
 
 		propsRaw, ok := result["props"]
@@ -584,6 +578,7 @@ func TestCanonicalizeParamsFlattensLocales(t *testing.T) {
 		result, err := canonicalizeParams(
 			map[string]any{"props": person},
 			r.applyMarshalHooks,
+			nil,
 		)
 		require.NoError(t, err)
 
