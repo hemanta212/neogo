@@ -568,15 +568,54 @@ func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Va
 		}
 		switch vv.Kind() {
 		case reflect.Slice:
-			bytes, err := json.Marshal(v)
-			if err != nil {
-				return nil, fmt.Errorf("cannot marshal slice: %w", err)
+			// Determine element type to check if it's a slice-of-structs.
+			elemT := vv.Type().Elem()
+			for elemT.Kind() == reflect.Ptr {
+				elemT = elemT.Elem()
 			}
-			var js []any
-			if err := json.Unmarshal(bytes, &js); err != nil {
-				return nil, fmt.Errorf("cannot unmarshal slice: %w", err)
+			isStructSlice := elemT.Kind() == reflect.Struct && len(localePreferredKeys) > 0
+
+			if isStructSlice {
+				// Slice of structs: marshal hooks already ran on each
+				// element via the top-level applyMarshalHooks call (which
+				// recurses into slices). We serialize each element
+				// individually so we can flatten locale fields per map.
+				js := make([]any, vv.Len())
+				for i := 0; i < vv.Len(); i++ {
+					elem := vv.Index(i)
+					for elem.Kind() == reflect.Ptr {
+						if elem.IsNil() {
+							break
+						}
+						elem = elem.Elem()
+					}
+					if elem.Kind() == reflect.Struct {
+						bytes, err := json.Marshal(elem.Interface())
+						if err != nil {
+							return nil, fmt.Errorf("cannot marshal slice element %s[%d]: %w", k, i, err)
+						}
+						var m map[string]any
+						if err := json.Unmarshal(bytes, &m); err != nil {
+							return nil, fmt.Errorf("cannot unmarshal slice element %s[%d]: %w", k, i, err)
+						}
+						flattenLocaleFields(elem, m, localePreferredKeys)
+						js[i] = m
+					} else {
+						js[i] = elem.Interface()
+					}
+				}
+				canon[k] = js
+			} else {
+				bytes, err := json.Marshal(v)
+				if err != nil {
+					return nil, fmt.Errorf("cannot marshal slice: %w", err)
+				}
+				var js []any
+				if err := json.Unmarshal(bytes, &js); err != nil {
+					return nil, fmt.Errorf("cannot unmarshal slice: %w", err)
+				}
+				canon[k] = js
 			}
-			canon[k] = js
 		case reflect.Map, reflect.Struct:
 			bytes, err := json.Marshal(v)
 			if err != nil {

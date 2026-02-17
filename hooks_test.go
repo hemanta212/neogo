@@ -590,6 +590,98 @@ func TestCanonicalizeParamsFlattensLocales(t *testing.T) {
 	})
 }
 
+func TestCanonicalizeParamsSliceOfStructsFlattensLocales(t *testing.T) {
+	t.Run("slice of struct pointers flattens locale per element", func(t *testing.T) {
+		people := []*hookHiddenLocalePerson{
+			{Name: "Alice", NameLocale: &hookLocales{EnAU: "AU Alice"}},
+			{Name: "Bob", NameLocale: &hookLocales{EnAU: "AU Bob"}},
+		}
+		result, err := canonicalizeParams(
+			map[string]any{"props": people},
+			nil,
+			[]string{"EnAU"},
+		)
+		require.NoError(t, err)
+
+		propsRaw, ok := result["props"]
+		require.True(t, ok)
+		props, ok := propsRaw.([]any)
+		require.True(t, ok, "props should be []any, got %T", propsRaw)
+		require.Len(t, props, 2)
+
+		m0, ok := props[0].(map[string]any)
+		require.True(t, ok, "element 0 should be map")
+		require.Equal(t, "Alice", m0["name"])
+		require.Equal(t, "AU Alice", m0["name_enAU"])
+
+		m1, ok := props[1].(map[string]any)
+		require.True(t, ok, "element 1 should be map")
+		require.Equal(t, "Bob", m1["name"])
+		require.Equal(t, "AU Bob", m1["name_enAU"])
+	})
+
+	t.Run("slice of struct values flattens locale per element", func(t *testing.T) {
+		people := []hookHiddenLocalePerson{
+			{Name: "Carol", NameLocale: &hookLocales{EnAU: "AU Carol"}},
+		}
+		result, err := canonicalizeParams(
+			map[string]any{"props": people},
+			nil,
+			[]string{"EnAU"},
+		)
+		require.NoError(t, err)
+
+		props := result["props"].([]any)
+		require.Len(t, props, 1)
+		m := props[0].(map[string]any)
+		require.Equal(t, "Carol", m["name"])
+		require.Equal(t, "AU Carol", m["name_enAU"])
+	})
+
+	t.Run("marshal hook + slice flattens locale per element", func(t *testing.T) {
+		// Use an AU-preferring selector so both marshal hook and flatten agree.
+		selector := staticLocaleSelector{"EnAU", "EnUS"}
+		var r registry
+		r.registerMarshalHook(LocalesHookWithSelector(selector))
+		people := []*hookHiddenLocalePerson{
+			{Name: "Dave", NameLocale: nil}, // hook should populate
+			{Name: "Eve", NameLocale: nil},
+		}
+		result, err := canonicalizeParams(
+			map[string]any{"props": people},
+			r.applyMarshalHooks,
+			selector.PreferredKeys(),
+		)
+		require.NoError(t, err)
+
+		props := result["props"].([]any)
+		require.Len(t, props, 2)
+		for i, name := range []string{"Dave", "Eve"} {
+			m := props[i].(map[string]any)
+			require.Equal(t, name, m["name"], "element %d", i)
+			// The hook copies base→EnAU (first preferred), then
+			// flattenLocaleFields emits name_enAU.
+			require.Equal(t, name, m["name_enAU"],
+				"element %d: marshal hook should populate locale, then flatten should inject it", i)
+		}
+	})
+
+	t.Run("slice without locale preferred keys uses standard path", func(t *testing.T) {
+		// Without preferred keys, the fast path (no per-element processing) is used
+		items := []hookPerson{{Name: "Frank"}}
+		result, err := canonicalizeParams(
+			map[string]any{"props": items},
+			nil,
+			nil, // no preferred keys
+		)
+		require.NoError(t, err)
+		props := result["props"].([]any)
+		require.Len(t, props, 1)
+		m := props[0].(map[string]any)
+		require.Equal(t, "Frank", m["name"])
+	})
+}
+
 // TestMarshalZeroValueFieldsPreserved verifies that zero-value struct fields
 // are included in Cypher parameters (not silently dropped).
 // This tests scope.go's bindFieldsFrom which skips f.IsZero() fields.
