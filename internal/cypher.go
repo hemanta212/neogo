@@ -446,7 +446,6 @@ func (cy *cypher) writeUnwindClause(expr any, as string) {
 func (cy *cypher) writeSubqueryClause(subquery func(c *CypherClient) *CypherRunner) {
 	cy.catch(func() {
 		childScope := newScope()
-		childScope.applyMarshalHooks = cy.applyMarshalHooks
 		child := NewCypherClientWithScope(childScope)
 		child.Parent = cy.Scope
 		child.mergeParentScope(child.Parent)
@@ -653,7 +652,6 @@ func (cy *cypher) writeForEachClause(identifier, elementsExpr any, do func(c *Cy
 		value := cy.valueIdentifier(elementsExpr)
 
 		foreach := newCypher()
-		foreach.applyMarshalHooks = cy.applyMarshalHooks
 		m := foreach.register(identifier, false, nil)
 		_, _ = fmt.Fprintf(cy, "%s IN %s | ", m.expr, value)
 

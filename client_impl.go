@@ -58,9 +58,6 @@ type (
 )
 
 func (s *session) newClient(cy *internal.CypherClient) *clientImpl {
-	if cy != nil && cy.Scope != nil {
-		cy.Scope.SetMarshalHook(s.applyMarshalHooks)
-	}
 	return &clientImpl{
 		session: s,
 		cy:      cy,
@@ -265,7 +262,7 @@ func (c *runnerImpl) run(
 	if err != nil {
 		return nil, fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.applyMarshalHooks, c.localePreferredKeys)
+	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.registry.applyAfterMarshalHooks)
 	if err != nil {
 		return nil, fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -320,7 +317,7 @@ func (c *runnerImpl) StreamWithParams(ctx context.Context, params map[string]any
 	if err != nil {
 		return fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.applyMarshalHooks, c.localePreferredKeys)
+	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.registry.applyAfterMarshalHooks)
 	if err != nil {
 		return fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -536,7 +533,10 @@ func (c *runnerImpl) executeTransaction(
 	return
 }
 
-func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Value) error, localePreferredKeys []string) (map[string]any, error) {
+func canonicalizeParams(
+	params map[string]any,
+	applyAfterMarshalHooks func(key string, original reflect.Value, serialized map[string]any) error,
+) (map[string]any, error) {
 	canon := make(map[string]any, len(params))
 	if len(params) == 0 {
 		return canon, nil
@@ -546,40 +546,20 @@ func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Va
 			canon[k] = nil
 			continue
 		}
-		// Ensure value is addressable so marshal hooks can modify struct
-		// fields. When v is a struct value (not pointer), reflect.ValueOf(v)
-		// produces a non-addressable copy whose fields cannot be Set().
 		rv := reflect.ValueOf(v)
 		vv := rv
 		for vv.Kind() == reflect.Ptr {
 			vv = vv.Elem()
 		}
-		if vv.Kind() == reflect.Struct && !vv.CanSet() {
-			addr := reflect.New(vv.Type())
-			addr.Elem().Set(vv)
-			rv = addr
-			vv = addr.Elem()
-			v = addr.Interface()
-		}
-		if applyMarshalHooks != nil {
-			if err := applyMarshalHooks(rv); err != nil {
-				return nil, fmt.Errorf("cannot apply marshal hooks for param %s: %w", k, err)
-			}
-		}
 		switch vv.Kind() {
 		case reflect.Slice:
-			// Determine element type to check if it's a slice-of-structs.
 			elemT := vv.Type().Elem()
 			for elemT.Kind() == reflect.Ptr {
 				elemT = elemT.Elem()
 			}
-			isStructSlice := elemT.Kind() == reflect.Struct && len(localePreferredKeys) > 0
+			isStructSlice := elemT.Kind() == reflect.Struct && applyAfterMarshalHooks != nil
 
 			if isStructSlice {
-				// Slice of structs: marshal hooks already ran on each
-				// element via the top-level applyMarshalHooks call (which
-				// recurses into slices). We serialize each element
-				// individually so we can flatten locale fields per map.
 				js := make([]any, vv.Len())
 				for i := 0; i < vv.Len(); i++ {
 					elem := vv.Index(i)
@@ -598,7 +578,9 @@ func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Va
 						if err := json.Unmarshal(bytes, &m); err != nil {
 							return nil, fmt.Errorf("cannot unmarshal slice element %s[%d]: %w", k, i, err)
 						}
-						flattenLocaleFields(elem, m, localePreferredKeys)
+						if err := applyAfterMarshalHooks(k, elem, m); err != nil {
+							return nil, fmt.Errorf("cannot apply after-marshal hooks for param %s[%d]: %w", k, i, err)
+						}
 						js[i] = m
 					} else {
 						js[i] = elem.Interface()
@@ -625,9 +607,11 @@ func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Va
 			if err := json.Unmarshal(bytes, &js); err != nil {
 				return nil, fmt.Errorf("cannot unmarshal map: %w", err)
 			}
-			if vv.Kind() == reflect.Struct {
+			if applyAfterMarshalHooks != nil && vv.Kind() == reflect.Struct {
 				if jsMap, ok := js.(map[string]any); ok {
-					flattenLocaleFields(vv, jsMap, localePreferredKeys)
+					if err := applyAfterMarshalHooks(k, vv, jsMap); err != nil {
+						return nil, fmt.Errorf("cannot apply after-marshal hooks for param %s: %w", k, err)
+					}
 				}
 			}
 			canon[k] = js
@@ -637,83 +621,3 @@ func canonicalizeParams(params map[string]any, applyMarshalHooks func(reflect.Va
 	}
 	return canon, nil
 }
-
-// flattenLocaleFields walks a struct's locale fields (detected by Locale/Locales
-// suffix) and injects their inner values as flat keys into the serialized map.
-// This recovers locale data lost during json.Marshal (fields tagged `json:"-"`).
-//
-// When preferredKeys is set (e.g. ["EnAU"]), only the first preferred key is
-// emitted — even when its value is zero (empty string). This ensures that when
-// a base field is explicitly set to "", the corresponding locale property is
-// written as "" to Neo4j. Non-preferred keys are never emitted since each
-// cluster has its own separate database.
-//
-// When preferredKeys is nil/empty, all non-zero locale fields are emitted
-// (fallback for tests or configurations without locale preference).
-func flattenLocaleFields(v reflect.Value, m map[string]any, preferredKeys []string) {
-	if v.Kind() != reflect.Struct {
-		return
-	}
-	t := v.Type()
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		// Recurse into embedded (anonymous) structs.
-		if f.Anonymous {
-			ev := v.Field(i)
-			for ev.Kind() == reflect.Ptr {
-				if ev.IsNil() {
-					break
-				}
-				ev = ev.Elem()
-			}
-			if ev.Kind() == reflect.Struct {
-				flattenLocaleFields(ev, m, preferredKeys)
-			}
-			continue
-		}
-		baseName, ok := localeBaseName(f.Name)
-		if !ok {
-			continue
-		}
-		fv := v.Field(i)
-		// Unwrap pointer.
-		for fv.Kind() == reflect.Ptr {
-			if fv.IsNil() {
-				break
-			}
-			fv = fv.Elem()
-		}
-		if fv.Kind() != reflect.Struct {
-			continue
-		}
-		prefix := lcFirst(baseName)
-		if len(preferredKeys) > 0 {
-			// Emit only the first preferred key. Even if its value is
-			// zero (e.g. ""), it gets written so that clearing a base
-			// field also clears the locale property.
-			key := preferredKeys[0]
-			field := fv.FieldByName(key)
-			if field.IsValid() {
-				flatKey := prefix + "_" + lcFirst(key)
-				m[flatKey] = field.Interface()
-			}
-		} else {
-			// Fallback: emit all non-zero locale fields.
-			lt := fv.Type()
-			for j := 0; j < lt.NumField(); j++ {
-				lf := lt.Field(j)
-				if lf.PkgPath != "" {
-					continue
-				}
-				lfv := fv.Field(j)
-				if lfv.IsZero() {
-					continue
-				}
-				flatKey := prefix + "_" + lcFirst(lf.Name)
-				m[flatKey] = lfv.Interface()
-			}
-		}
-	}
-}
-
-

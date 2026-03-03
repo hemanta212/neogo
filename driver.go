@@ -49,14 +49,11 @@ func New(
 	if len(cfg.Types) > 0 {
 		d.registerTypes(cfg.Types...)
 	}
-	for _, h := range cfg.MarshalHooks {
-		d.registerMarshalHook(h)
+	for _, h := range cfg.AfterMarshalHooks {
+		d.registerAfterMarshalHook(h)
 	}
-	for _, h := range cfg.UnmarshalHooks {
-		d.registerUnmarshalHook(h)
-	}
-	if len(cfg.LocalePreferredKeys) > 0 {
-		d.localePreferredKeys = cfg.LocalePreferredKeys
+	for _, h := range cfg.AfterUnmarshalHooks {
+		d.registerAfterUnmarshalHook(h)
 	}
 
 	return &d, nil
@@ -88,15 +85,11 @@ type (
 		// The session is closed after the query is executed.
 		Exec(configurers ...func(*execConfig)) Query
 
-		// ApplyUnmarshalHooks runs registered unmarshal hooks on a value that was
+		// ApplyAfterUnmarshalHooks runs registered unmarshal hooks on a value that was
 		// populated outside the normal neogo bind path (e.g. via helpers.UnmarshalProps).
 		// `from` is the raw property map (map[string]any) used to populate the struct.
 		// `to` is a pointer to the struct to apply hooks on.
-		ApplyUnmarshalHooks(from any, to any) error
-
-		// LocalePreferredKeys returns the configured locale preferred keys (e.g. ["EnAU", "EnUS"]).
-		// Returns nil if no locale configuration is set.
-		LocalePreferredKeys() []string
+		ApplyAfterUnmarshalHooks(from any, to any) error
 	}
 
 	// Expression is an interface for compiling a Cypher expression outside the context of a query.
@@ -169,16 +162,12 @@ type (
 
 func (d *driver) DB() neo4j.DriverWithContext { return d.db }
 
-func (d *driver) ApplyUnmarshalHooks(from any, to any) error {
+func (d *driver) ApplyAfterUnmarshalHooks(from any, to any) error {
 	rv := reflect.ValueOf(to)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
 		return nil
 	}
-	return d.registry.applyUnmarshalHooks(from, rv)
-}
-
-func (d *driver) LocalePreferredKeys() []string {
-	return d.registry.localePreferredKeys
+	return d.registry.applyAfterUnmarshalHooks(from, rv)
 }
 
 func (d *driver) Exec(configurers ...func(*execConfig)) Query {

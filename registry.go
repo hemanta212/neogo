@@ -41,19 +41,12 @@ type Valuer[V neo4j.RecordValue] interface {
 	Unmarshal(*V) error
 }
 
-type Hook func(reflect.Value) error
-
-type MarshalHook = Hook
-
-type UnmarshalHook func(from any, to reflect.Value) error
-
 type registry struct {
 	abstractNodes       []any
 	nodes               []any
 	relationships       []any
-	marshalHooks        []MarshalHook
-	unmarshalHooks      []UnmarshalHook
-	localePreferredKeys []string
+	afterMarshalHooks   []AfterMarshalHook
+	afterUnmarshalHooks []AfterUnmarshalHook
 }
 
 func (r *registry) registerTypes(types ...any) {
@@ -82,35 +75,43 @@ func (r *registry) registerTypes(types ...any) {
 	}
 }
 
-func (r *registry) registerMarshalHook(hook MarshalHook) {
+func (r *registry) registerAfterMarshalHook(hook AfterMarshalHook) {
 	if hook == nil {
 		return
 	}
-	r.marshalHooks = append(r.marshalHooks, hook)
+	r.afterMarshalHooks = append(r.afterMarshalHooks, hook)
 }
 
-func (r *registry) registerUnmarshalHook(hook UnmarshalHook) {
+func (r *registry) registerAfterUnmarshalHook(hook AfterUnmarshalHook) {
 	if hook == nil {
 		return
 	}
-	r.unmarshalHooks = append(r.unmarshalHooks, hook)
+	r.afterUnmarshalHooks = append(r.afterUnmarshalHooks, hook)
 }
 
-func (r *registry) applyMarshalHooks(value reflect.Value) error {
-	return r.applyHooks(value, r.marshalHooks)
+func (r *registry) applyAfterMarshalHooks(key string, original reflect.Value, serialized map[string]any) error {
+	if len(r.afterMarshalHooks) == 0 {
+		return nil
+	}
+	for _, hook := range r.afterMarshalHooks {
+		if err := hook(key, original, serialized); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func (r *registry) applyUnmarshalHooks(from any, value reflect.Value) error {
+func (r *registry) applyAfterUnmarshalHooks(from any, value reflect.Value) error {
 	if value == (reflect.Value{}) {
 		return nil
 	}
-	if len(r.unmarshalHooks) == 0 {
+	if len(r.afterUnmarshalHooks) == 0 {
 		return nil
 	}
-	return r.applyUnmarshalHooksRecursive(from, value, make(map[uintptr]struct{}))
+	return r.applyAfterUnmarshalHooksRecursive(from, value, make(map[uintptr]struct{}))
 }
 
-func (r *registry) applyUnmarshalHooksRecursive(
+func (r *registry) applyAfterUnmarshalHooksRecursive(
 	from any,
 	value reflect.Value,
 	seen map[uintptr]struct{},
@@ -139,9 +140,9 @@ func (r *registry) applyUnmarshalHooksRecursive(
 		if value.IsNil() {
 			return nil
 		}
-		return r.applyUnmarshalHooksRecursive(from, value.Elem(), seen)
+		return r.applyAfterUnmarshalHooksRecursive(from, value.Elem(), seen)
 	case reflect.Struct:
-		for _, hook := range r.unmarshalHooks {
+		for _, hook := range r.afterUnmarshalHooks {
 			if err := hook(from, value); err != nil {
 				return err
 			}
@@ -160,80 +161,13 @@ func (r *registry) applyUnmarshalHooksRecursive(
 			if ft.Anonymous {
 				fieldFrom = from
 			}
-			if err := r.applyUnmarshalHooksRecursive(fieldFrom, fv, seen); err != nil {
+			if err := r.applyAfterUnmarshalHooksRecursive(fieldFrom, fv, seen); err != nil {
 				return err
 			}
 		}
 	case reflect.Slice, reflect.Array:
 		for i := 0; i < value.Len(); i++ {
-			if err := r.applyUnmarshalHooksRecursive(nil, value.Index(i), seen); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (r *registry) applyHooks(
-	value reflect.Value,
-	hooks []MarshalHook,
-) error {
-	if value == (reflect.Value{}) {
-		return nil
-	}
-	return r.applyHooksRecursive(value, hooks, make(map[uintptr]struct{}))
-}
-
-func (r *registry) applyHooksRecursive(
-	value reflect.Value,
-	hooks []MarshalHook,
-	seen map[uintptr]struct{},
-) error {
-	if !value.IsValid() {
-		return nil
-	}
-	for value.Kind() == reflect.Ptr {
-		if value.IsNil() {
-			return nil
-		}
-		ptr := value.Pointer()
-		if _, ok := seen[ptr]; ok {
-			return nil
-		}
-		seen[ptr] = struct{}{}
-		value = value.Elem()
-	}
-
-	if !value.IsValid() {
-		return nil
-	}
-
-	switch value.Kind() {
-	case reflect.Interface:
-		if value.IsNil() {
-			return nil
-		}
-		return r.applyHooksRecursive(value.Elem(), hooks, seen)
-	case reflect.Struct:
-		for _, hook := range hooks {
-			if err := hook(value); err != nil {
-				return err
-			}
-		}
-		valueT := value.Type()
-		for i := 0; i < valueT.NumField(); i++ {
-			fv := value.Field(i)
-			ft := valueT.Field(i)
-			if ft.PkgPath != "" {
-				continue
-			}
-			if err := r.applyHooksRecursive(fv, hooks, seen); err != nil {
-				return err
-			}
-		}
-	case reflect.Slice, reflect.Array:
-		for i := 0; i < value.Len(); i++ {
-			if err := r.applyHooksRecursive(value.Index(i), hooks, seen); err != nil {
+			if err := r.applyAfterUnmarshalHooksRecursive(nil, value.Index(i), seen); err != nil {
 				return err
 			}
 		}
@@ -287,7 +221,7 @@ func (r *registry) bindValue(from any, to reflect.Value) (err error) {
 		if err != nil || to == (reflect.Value{}) {
 			return
 		}
-		if hookErr := r.applyUnmarshalHooks(from, to); hookErr != nil {
+		if hookErr := r.applyAfterUnmarshalHooks(from, to); hookErr != nil {
 			err = hookErr
 		}
 	}()

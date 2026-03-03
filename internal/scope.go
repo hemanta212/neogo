@@ -21,10 +21,6 @@ func newScope() *Scope {
 	}
 }
 
-func (s *Scope) SetMarshalHook(fn func(reflect.Value) error) {
-	s.applyMarshalHooks = fn
-}
-
 type (
 	Scope struct {
 		err error
@@ -40,8 +36,6 @@ type (
 
 		parameters map[string]any
 		paramAddrs map[uintptr]string
-
-		applyMarshalHooks func(reflect.Value) error
 	}
 	// An instance of a node/relationship in the cypher query
 	member struct {
@@ -118,14 +112,13 @@ func (s *Scope) clone() *Scope {
 		paramAddrs[k] = v
 	}
 	return &Scope{
-		bindings:          bindings,
-		generatedNames:    generatedNames,
-		names:             names,
-		fields:            fields,
-		paramCounter:      paramCounter,
-		parameters:        parameters,
-		paramAddrs:        paramAddrs,
-		applyMarshalHooks: s.applyMarshalHooks,
+		bindings:       bindings,
+		generatedNames: generatedNames,
+		names:          names,
+		fields:         fields,
+		paramCounter:   paramCounter,
+		parameters:     parameters,
+		paramAddrs:     paramAddrs,
 	}
 }
 
@@ -143,9 +136,6 @@ func (child *Scope) mergeParentScope(parent *Scope) {
 	for k, v := range parent.fields {
 		child.fields[k] = v
 	}
-	if parent.applyMarshalHooks != nil {
-		child.applyMarshalHooks = parent.applyMarshalHooks
-	}
 }
 
 func (s *Scope) clear() {
@@ -155,7 +145,6 @@ func (s *Scope) clear() {
 	s.fields = map[uintptr]field{}
 	s.parameters = map[string]any{}
 	s.paramAddrs = map[uintptr]string{}
-	s.applyMarshalHooks = nil
 }
 
 func (s *Scope) MergeChildScope(child *Scope) {
@@ -180,9 +169,6 @@ func (s *Scope) MergeChildScope(child *Scope) {
 	s.paramCounter = child.paramCounter
 	if child.isWrite {
 		s.isWrite = true
-	}
-	if child.applyMarshalHooks != nil {
-		s.applyMarshalHooks = child.applyMarshalHooks
 	}
 	s.AddError(child.err)
 }
@@ -486,12 +472,6 @@ func (s *Scope) register(value any, lookup bool, isNode *bool) *member {
 					break
 				}
 			}
-			if s.applyMarshalHooks != nil {
-				if err := s.applyMarshalHooks(inner); err != nil {
-					panic(err)
-				}
-			}
-
 			// Instead of injecting struct as parameter, inject its fields as
 			// qualified parameters. This allows props to be used in MATCH and MERGE
 			// clause for instance, where a property expression is not allowed.

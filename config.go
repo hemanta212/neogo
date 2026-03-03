@@ -34,9 +34,8 @@ type Config struct {
 
 	CausalConsistencyKey func(context.Context) string
 	Types                []any
-	MarshalHooks         []MarshalHook
-	UnmarshalHooks       []UnmarshalHook
-	LocalePreferredKeys  []string
+	AfterMarshalHooks    []AfterMarshalHook
+	AfterUnmarshalHooks  []AfterUnmarshalHook
 }
 
 // Configurer is a function that configures a neogo Config.
@@ -66,30 +65,21 @@ func WithTypes(types ...any) Configurer {
 	}
 }
 
-// WithMarshalHook registers a hook that is invoked before struct values are
-// marshalled into query parameters.
-func WithMarshalHook(hook MarshalHook) Configurer {
+// WithAfterMarshalHook registers a hook that runs after struct parameters are
+// serialized to map[string]any but before being sent to Neo4j. The hook can
+// inspect the original struct value and modify the serialized map.
+func WithAfterMarshalHook(hook AfterMarshalHook) Configurer {
 	return func(c *Config) {
-		c.MarshalHooks = append(c.MarshalHooks, hook)
+		c.AfterMarshalHooks = append(c.AfterMarshalHooks, hook)
 	}
 }
 
-// WithUnmarshalHook registers a hook that is invoked after values are
-// unmarshalled into result bindings.
-func WithUnmarshalHook(hook UnmarshalHook) Configurer {
+// WithAfterUnmarshalHook registers a hook that runs after values are
+// unmarshalled from Neo4j results into struct bindings. The hook can inspect
+// the raw source data and modify the deserialized struct.
+func WithAfterUnmarshalHook(hook AfterUnmarshalHook) Configurer {
 	return func(c *Config) {
-		c.UnmarshalHooks = append(c.UnmarshalHooks, hook)
-	}
-}
-
-// WithLocales registers marshal/unmarshal hooks and locale preferred keys
-// from a single LocaleSelector. This is the recommended way to configure
-// locale support — everything is derived from the selector.
-func WithLocales(selector LocaleSelector) Configurer {
-	return func(c *Config) {
-		c.MarshalHooks = append(c.MarshalHooks, LocalesHookWithSelector(selector))
-		c.UnmarshalHooks = append(c.UnmarshalHooks, LocalesUnmarshalHookWithSelector(selector))
-		c.LocalePreferredKeys = selector.PreferredKeys()
+		c.AfterUnmarshalHooks = append(c.AfterUnmarshalHooks, hook)
 	}
 }
 
