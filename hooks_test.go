@@ -342,6 +342,39 @@ func TestUnmarshalHookRegressionCases(t *testing.T) {
 		require.Equal(t, "x!", person.Name)
 	})
 
+	t.Run("root hooks should retain original neo4j values", func(t *testing.T) {
+		type relPayload struct {
+			Count int `json:"count"`
+		}
+
+		var (
+			gotNode         any
+			gotRelationship any
+			r               registry
+		)
+		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+			switch value.Type() {
+			case reflect.TypeOf(hookPerson{}):
+				gotNode = from
+			case reflect.TypeOf(relPayload{}):
+				gotRelationship = from
+			}
+			return nil
+		})
+
+		person := hookPerson{}
+		node := neo4j.Node{Labels: []string{"Person"}, Props: map[string]any{"name": "x"}}
+		err := r.bindValue(node, reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Equal(t, node, gotNode)
+
+		rel := relPayload{}
+		rawRel := neo4j.Relationship{Type: "KNOWS", Props: map[string]any{"count": int64(2)}}
+		err = r.bindValue(rawRel, reflect.ValueOf(&rel))
+		require.NoError(t, err)
+		require.Equal(t, rawRel, gotRelationship)
+	})
+
 	t.Run("nested named struct fields should receive their raw source map", func(t *testing.T) {
 		var (
 			gotFrom any
