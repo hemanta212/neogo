@@ -1,12 +1,15 @@
 package neogo
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	"github.com/stretchr/testify/require"
+
+	"github.com/rlch/neogo/db"
 )
 
 type hookPerson struct {
@@ -19,6 +22,18 @@ type hookWrapper struct {
 
 type hookIfaceWrapper struct {
 	Item any
+}
+
+type hookNestedWrapper struct {
+	Person hookPerson `json:"person"`
+}
+
+type hookPtrMarshalJSONPerson struct {
+	Name string `json:"name"`
+}
+
+func (p *hookPtrMarshalJSONPerson) MarshalJSON() ([]byte, error) {
+	return []byte(`{"name":"via-pointer-marshal"}`), nil
 }
 
 func setHookName(value reflect.Value, next string) bool {
@@ -245,5 +260,129 @@ func TestAfterMarshalHook(t *testing.T) {
 		props := result["props"].(map[string]any)
 		require.Equal(t, "visible", props["name"])
 		require.Equal(t, "hidden", props["secret_value"])
+	})
+
+	t.Run("query-builder struct props should also trigger hook", func(t *testing.T) {
+		t.Skip("deferred: real neogo API gap, but not needed for current locale usage paths")
+
+		ctx := context.Background()
+		m := NewMock().(*mockDriverImpl)
+		m.Bind(nil)
+
+		var called int
+		m.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+			serialized["name"] = "hooked-via-builder"
+			called++
+			return nil
+		})
+
+		person := hookPerson{Name: "raw"}
+		err := m.Exec().
+			Create(db.Node(db.Qual(&person, "n"))).
+			Run(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 1, called, "AfterMarshalHook should fire for struct-prop query-builder writes too")
+	})
+
+	t.Run("slice of struct pointers should canonicalize nil elements to nil", func(t *testing.T) {
+		var r registry
+		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+			return nil
+		})
+
+		people := []*hookPerson{nil, {Name: "Alice"}}
+		result, err := canonicalizeParams(
+			map[string]any{"props": people},
+			r.applyAfterMarshalHooks,
+		)
+		require.NoError(t, err)
+		props := result["props"].([]any)
+		require.Len(t, props, 2)
+		require.Equal(t, nil, props[0], "nil slice elements should stay plain nil, not typed nil pointers")
+	})
+
+	t.Run("slice of struct pointers should preserve pointer MarshalJSON behavior", func(t *testing.T) {
+		var r registry
+		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+			return nil
+		})
+
+		people := []*hookPtrMarshalJSONPerson{{Name: "raw"}}
+		result, err := canonicalizeParams(
+			map[string]any{"props": people},
+			r.applyAfterMarshalHooks,
+		)
+		require.NoError(t, err)
+		props := result["props"].([]any)
+		require.Len(t, props, 1)
+		require.Equal(t, "via-pointer-marshal", props[0].(map[string]any)["name"])
+	})
+}
+
+func TestUnmarshalHookRegressionCases(t *testing.T) {
+	t.Run("logical object should only be hooked once during bind", func(t *testing.T) {
+		var (
+			called int
+			r      registry
+		)
+		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+			field := value.FieldByName("Name")
+			if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.String {
+				return nil
+			}
+			field.SetString(field.String() + "!")
+			called++
+			return nil
+		})
+
+		person := hookPerson{}
+		err := r.bindValue(neo4j.Node{Props: map[string]any{"name": "x"}}, reflect.ValueOf(&person))
+		require.NoError(t, err)
+		require.Equal(t, 1, called, "hook should run exactly once per logical object")
+		require.Equal(t, "x!", person.Name)
+	})
+
+	t.Run("nested named struct fields should receive their raw source map", func(t *testing.T) {
+		var (
+			gotFrom any
+			r       registry
+		)
+		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+			if value.Type() == reflect.TypeOf(hookPerson{}) {
+				gotFrom = from
+			}
+			return nil
+		})
+
+		wrapper := hookNestedWrapper{}
+		err := r.bindValue(map[string]any{
+			"person": map[string]any{"name": "nested"},
+		}, reflect.ValueOf(&wrapper))
+		require.NoError(t, err)
+		require.Equal(t, map[string]any{"name": "nested"}, gotFrom)
+	})
+
+	t.Run("slice elements should receive their own raw source maps", func(t *testing.T) {
+		var (
+			gotFroms []any
+			r        registry
+		)
+		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+			if value.Type() == reflect.TypeOf(hookPerson{}) {
+				gotFroms = append(gotFroms, from)
+			}
+			return nil
+		})
+
+		var people []hookPerson
+		err := r.bindValue([]any{
+			map[string]any{"name": "one"},
+			map[string]any{"name": "two"},
+		}, reflect.ValueOf(&people))
+		require.NoError(t, err)
+		require.Equal(t, []any{
+			map[string]any{"name": "one"},
+			map[string]any{"name": "two"},
+		}, gotFroms)
 	})
 }

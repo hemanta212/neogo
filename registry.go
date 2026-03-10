@@ -111,6 +111,70 @@ func (r *registry) applyAfterUnmarshalHooks(from any, value reflect.Value) error
 	return r.applyAfterUnmarshalHooksRecursive(from, value, make(map[uintptr]struct{}))
 }
 
+func normalizeHookFrom(from any) any {
+	switch v := from.(type) {
+	case neo4j.Node:
+		return v.Props
+	case neo4j.Relationship:
+		return v.Props
+	default:
+		return from
+	}
+}
+
+func hookJSONFieldName(field reflect.StructField) (string, bool) {
+	if jsTag, ok := field.Tag.Lookup("json"); ok {
+		name := strings.Split(jsTag, ",")[0]
+		if name == "-" {
+			return "", false
+		}
+		if name != "" {
+			return name, true
+		}
+	}
+	return field.Name, true
+}
+
+func hookMapValue(parent any, field reflect.StructField) (any, bool) {
+	m, ok := normalizeHookFrom(parent).(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	name, ok := hookJSONFieldName(field)
+	if !ok {
+		return nil, false
+	}
+	if value, ok := m[name]; ok {
+		return normalizeHookFrom(value), true
+	}
+	for key, value := range m {
+		if strings.EqualFold(key, name) {
+			return normalizeHookFrom(value), true
+		}
+	}
+	return nil, false
+}
+
+func hookIndexValue(parent any, index int) (any, bool) {
+	value := reflect.ValueOf(normalizeHookFrom(parent))
+	for value.IsValid() && (value.Kind() == reflect.Interface || value.Kind() == reflect.Ptr) {
+		if value.IsNil() {
+			return nil, false
+		}
+		value = value.Elem()
+	}
+	if !value.IsValid() {
+		return nil, false
+	}
+	if value.Kind() != reflect.Slice && value.Kind() != reflect.Array {
+		return nil, false
+	}
+	if index < 0 || index >= value.Len() {
+		return nil, false
+	}
+	return normalizeHookFrom(value.Index(index).Interface()), true
+}
+
 func (r *registry) applyAfterUnmarshalHooksRecursive(
 	from any,
 	value reflect.Value,
@@ -154,12 +218,11 @@ func (r *registry) applyAfterUnmarshalHooksRecursive(
 			if ft.PkgPath != "" {
 				continue
 			}
-			// Embedded (anonymous) fields share the same raw source as the parent
-			// struct — flat DB properties map to promoted fields.
-			// Non-embedded fields don't have a corresponding raw source, pass nil.
 			fieldFrom := any(nil)
 			if ft.Anonymous {
 				fieldFrom = from
+			} else if childFrom, ok := hookMapValue(from, ft); ok {
+				fieldFrom = childFrom
 			}
 			if err := r.applyAfterUnmarshalHooksRecursive(fieldFrom, fv, seen); err != nil {
 				return err
@@ -167,7 +230,13 @@ func (r *registry) applyAfterUnmarshalHooksRecursive(
 		}
 	case reflect.Slice, reflect.Array:
 		for i := 0; i < value.Len(); i++ {
-			if err := r.applyAfterUnmarshalHooksRecursive(nil, value.Index(i), seen); err != nil {
+			elemFrom := any(nil)
+			if childFrom, ok := hookIndexValue(from, i); ok {
+				elemFrom = childFrom
+			} else if i == 0 {
+				elemFrom = normalizeHookFrom(from)
+			}
+			if err := r.applyAfterUnmarshalHooksRecursive(elemFrom, value.Index(i), seen); err != nil {
 				return err
 			}
 		}
@@ -216,16 +285,14 @@ func bindCasted[C any](
 
 var emptyInterface = reflect.TypeOf((*any)(nil)).Elem()
 
-func (r *registry) bindValue(from any, to reflect.Value) (err error) {
-	defer func() {
-		if err != nil || to == (reflect.Value{}) {
-			return
-		}
-		if hookErr := r.applyAfterUnmarshalHooks(from, to); hookErr != nil {
-			err = hookErr
-		}
-	}()
+func (r *registry) bindValue(from any, to reflect.Value) error {
+	if err := r.bindValueNoHooks(from, to); err != nil {
+		return err
+	}
+	return r.applyAfterUnmarshalHooks(from, to)
+}
 
+func (r *registry) bindValueNoHooks(from any, to reflect.Value) (err error) {
 	toT := to.Type()
 	if to.Kind() == reflect.Ptr && toT.Elem() == emptyInterface {
 		to.Elem().Set(reflect.ValueOf(from))
@@ -243,7 +310,7 @@ func (r *registry) bindValue(from any, to reflect.Value) (err error) {
 				sliceV = sliceV.Elem()
 			}
 			sliceV.Set(reflect.MakeSlice(sliceV.Type(), 1, 1))
-			return r.bindValue(fromVal, sliceV.Index(0).Addr())
+			return r.bindValueNoHooks(fromVal, sliceV.Index(0).Addr())
 		}
 		// Valuer through Node / relationship
 		switch fromVal := from.(type) {
@@ -270,7 +337,7 @@ func (r *registry) bindValue(from any, to reflect.Value) (err error) {
 				innerT.Kind() == reflect.Interface {
 				return r.bindAbstractNode(fromVal, to)
 			}
-			return r.bindValue(fromVal.Props, to)
+			return r.bindValueNoHooks(fromVal.Props, to)
 		case neo4j.Relationship:
 			// Handle 1 record of an expected slice of relationships
 			if unwindType(toT).Kind() == reflect.Slice {
@@ -283,7 +350,7 @@ func (r *registry) bindValue(from any, to reflect.Value) (err error) {
 			if ok {
 				return nil
 			}
-			return r.bindValue(fromVal.Props, to)
+			return r.bindValueNoHooks(fromVal.Props, to)
 		}
 
 		// Valuer throuh any other RecordValue
@@ -354,14 +421,14 @@ func (r *registry) bindValue(from any, to reflect.Value) (err error) {
 					if toI.CanAddr() {
 						toI = toI.Addr()
 					}
-					err := r.bindValue(fromI, toI)
+					err := r.bindValueNoHooks(fromI, toI)
 					if err != nil {
 						return fmt.Errorf("error binding slice element %d: %w", i, err)
 					}
 				}
 			} else if fromDepth+1 == toDepth {
 				to.Set(reflect.MakeSlice(toT, 1, 1))
-				err := r.bindValue(from, to.Index(0))
+				err := r.bindValueNoHooks(from, to.Index(0))
 				if err != nil {
 					return fmt.Errorf("error binding value to first index of slice: %w", err)
 				}
@@ -434,7 +501,7 @@ func (r *registry) bindValue(from any, to reflect.Value) (err error) {
 		// Handle non-slice values (including nil) by creating a slice with one element
 		if from == nil || reflect.TypeOf(from).Kind() != reflect.Slice {
 			sliceV.Set(reflect.MakeSlice(sliceV.Type(), 1, 1))
-			return r.bindValue(from, sliceV.Index(0).Addr())
+			return r.bindValueNoHooks(from, sliceV.Index(0).Addr())
 		}
 	}
 
@@ -536,7 +603,7 @@ func (r *registry) bindAbstractNode(node neo4j.Node, to reflect.Value) error {
 		)
 	}
 	toImpl := reflect.New(reflect.TypeOf(impl).Elem())
-	err := r.bindValue(node.Props, toImpl)
+	err := r.bindValueNoHooks(node.Props, toImpl)
 	if err != nil {
 		return err
 	}

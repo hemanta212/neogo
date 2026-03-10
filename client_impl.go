@@ -563,28 +563,43 @@ func canonicalizeParams(
 				js := make([]any, vv.Len())
 				for i := 0; i < vv.Len(); i++ {
 					elem := vv.Index(i)
-					for elem.Kind() == reflect.Ptr {
-						if elem.IsNil() {
+					marshalValue := elem
+					hookOriginal := reflect.Value{}
+
+					for marshalValue.Kind() == reflect.Interface {
+						if marshalValue.IsNil() {
 							break
 						}
-						elem = elem.Elem()
+						marshalValue = marshalValue.Elem()
 					}
-					if elem.Kind() == reflect.Struct {
-						bytes, err := json.Marshal(elem.Interface())
-						if err != nil {
-							return nil, fmt.Errorf("cannot marshal slice element %s[%d]: %w", k, i, err)
+
+					if marshalValue.Kind() == reflect.Ptr {
+						if marshalValue.IsNil() {
+							js[i] = nil
+							continue
 						}
-						var m map[string]any
-						if err := json.Unmarshal(bytes, &m); err != nil {
-							return nil, fmt.Errorf("cannot unmarshal slice element %s[%d]: %w", k, i, err)
-						}
-						if err := applyAfterMarshalHooks(k, elem, m); err != nil {
-							return nil, fmt.Errorf("cannot apply after-marshal hooks for param %s[%d]: %w", k, i, err)
-						}
-						js[i] = m
+						hookOriginal = marshalValue.Elem()
 					} else {
-						js[i] = elem.Interface()
+						hookOriginal = marshalValue
 					}
+
+					bytes, err := json.Marshal(elem.Interface())
+					if err != nil {
+						return nil, fmt.Errorf("cannot marshal slice element %s[%d]: %w", k, i, err)
+					}
+					var decoded any
+					if err := json.Unmarshal(bytes, &decoded); err != nil {
+						return nil, fmt.Errorf("cannot unmarshal slice element %s[%d]: %w", k, i, err)
+					}
+					if hookOriginal.IsValid() && hookOriginal.Kind() == reflect.Struct {
+						if m, ok := decoded.(map[string]any); ok {
+							if err := applyAfterMarshalHooks(k, hookOriginal, m); err != nil {
+								return nil, fmt.Errorf("cannot apply after-marshal hooks for param %s[%d]: %w", k, i, err)
+							}
+							decoded = m
+						}
+					}
+					js[i] = decoded
 				}
 				canon[k] = js
 			} else {
