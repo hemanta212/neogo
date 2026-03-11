@@ -445,8 +445,7 @@ func (cy *cypher) writeUnwindClause(expr any, as string) {
 
 func (cy *cypher) writeSubqueryClause(subquery func(c *CypherClient) *CypherRunner) {
 	cy.catch(func() {
-		childScope := newScope()
-		child := NewCypherClientWithScope(childScope)
+		child := NewCypherClient()
 		child.Parent = cy.Scope
 		child.mergeParentScope(child.Parent)
 		runSubquery := subquery(child)

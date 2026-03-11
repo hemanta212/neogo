@@ -8,14 +8,7 @@ import (
 )
 
 func NewCypherClient() *CypherClient {
-	return NewCypherClientWithScope(nil)
-}
-
-func NewCypherClientWithScope(scope *Scope) *CypherClient {
 	cy := newCypher()
-	if scope != nil {
-		cy.Scope = scope
-	}
 	return newCypherClient(cy)
 }
 

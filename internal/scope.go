@@ -472,6 +472,7 @@ func (s *Scope) register(value any, lookup bool, isNode *bool) *member {
 					break
 				}
 			}
+
 			// Instead of injecting struct as parameter, inject its fields as
 			// qualified parameters. This allows props to be used in MATCH and MERGE
 			// clause for instance, where a property expression is not allowed.
