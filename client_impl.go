@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/goccy/go-json"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
 	"github.com/rlch/neogo/internal"
@@ -262,7 +261,7 @@ func (c *runnerImpl) run(
 	if err != nil {
 		return nil, fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.registry.applyMarshalHooks)
+	canonicalizedParams, err := c.registry.canonicalizeParams(cy.Parameters)
 	if err != nil {
 		return nil, fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -317,7 +316,7 @@ func (c *runnerImpl) StreamWithParams(ctx context.Context, params map[string]any
 	if err != nil {
 		return fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.registry.applyMarshalHooks)
+	canonicalizedParams, err := c.registry.canonicalizeParams(cy.Parameters)
 	if err != nil {
 		return fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -533,106 +532,3 @@ func (c *runnerImpl) executeTransaction(
 	return
 }
 
-func canonicalizeParams(
-	params map[string]any,
-	applyMarshalHooks func(key string, original reflect.Value, serialized map[string]any) error,
-) (map[string]any, error) {
-	canon := make(map[string]any, len(params))
-	if len(params) == 0 {
-		return canon, nil
-	}
-	for k, v := range params {
-		if v == nil {
-			canon[k] = nil
-			continue
-		}
-		rv := reflect.ValueOf(v)
-		vv := rv
-		for vv.Kind() == reflect.Ptr {
-			vv = vv.Elem()
-		}
-		switch vv.Kind() {
-		case reflect.Slice:
-			elemT := vv.Type().Elem()
-			for elemT.Kind() == reflect.Ptr {
-				elemT = elemT.Elem()
-			}
-			isStructSlice := elemT.Kind() == reflect.Struct && applyMarshalHooks != nil
-
-			if isStructSlice {
-				js := make([]any, vv.Len())
-				for i := 0; i < vv.Len(); i++ {
-					elem := vv.Index(i)
-					marshalValue := elem
-					hookOriginal := reflect.Value{}
-
-					for marshalValue.Kind() == reflect.Interface {
-						if marshalValue.IsNil() {
-							break
-						}
-						marshalValue = marshalValue.Elem()
-					}
-
-					if marshalValue.Kind() == reflect.Ptr {
-						if marshalValue.IsNil() {
-							js[i] = nil
-							continue
-						}
-						hookOriginal = marshalValue.Elem()
-					} else {
-						hookOriginal = marshalValue
-					}
-
-					bytes, err := json.Marshal(elem.Interface())
-					if err != nil {
-						return nil, fmt.Errorf("cannot marshal slice element %s[%d]: %w", k, i, err)
-					}
-					var decoded any
-					if err := json.Unmarshal(bytes, &decoded); err != nil {
-						return nil, fmt.Errorf("cannot unmarshal slice element %s[%d]: %w", k, i, err)
-					}
-					if hookOriginal.IsValid() && hookOriginal.Kind() == reflect.Struct {
-						if m, ok := decoded.(map[string]any); ok {
-							if err := applyMarshalHooks(k, hookOriginal, m); err != nil {
-								return nil, fmt.Errorf("cannot apply after-marshal hooks for param %s[%d]: %w", k, i, err)
-							}
-							decoded = m
-						}
-					}
-					js[i] = decoded
-				}
-				canon[k] = js
-			} else {
-				bytes, err := json.Marshal(v)
-				if err != nil {
-					return nil, fmt.Errorf("cannot marshal slice: %w", err)
-				}
-				var js []any
-				if err := json.Unmarshal(bytes, &js); err != nil {
-					return nil, fmt.Errorf("cannot unmarshal slice: %w", err)
-				}
-				canon[k] = js
-			}
-		case reflect.Map, reflect.Struct:
-			bytes, err := json.Marshal(v)
-			if err != nil {
-				return nil, fmt.Errorf("cannot marshal map: %w", err)
-			}
-			var js any
-			if err := json.Unmarshal(bytes, &js); err != nil {
-				return nil, fmt.Errorf("cannot unmarshal map: %w", err)
-			}
-			if applyMarshalHooks != nil && vv.Kind() == reflect.Struct {
-				if jsMap, ok := js.(map[string]any); ok {
-					if err := applyMarshalHooks(k, vv, jsMap); err != nil {
-						return nil, fmt.Errorf("cannot apply after-marshal hooks for param %s: %w", k, err)
-					}
-				}
-			}
-			canon[k] = js
-		default:
-			canon[k] = v
-		}
-	}
-	return canon, nil
-}

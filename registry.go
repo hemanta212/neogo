@@ -101,6 +101,129 @@ func (r *registry) applyMarshalHooks(key string, original reflect.Value, seriali
 	return nil
 }
 
+func (r *registry) canonicalizeParams(params map[string]any) (map[string]any, error) {
+	canon := make(map[string]any, len(params))
+	if len(params) == 0 {
+		return canon, nil
+	}
+	for key, value := range params {
+		canonicalValue, err := r.canonicalizeParamValue(key, value)
+		if err != nil {
+			return nil, err
+		}
+		canon[key] = canonicalValue
+	}
+	return canon, nil
+}
+
+func (r *registry) canonicalizeParamValue(key string, value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	vv := reflect.ValueOf(value)
+	for vv.Kind() == reflect.Ptr {
+		vv = vv.Elem()
+	}
+
+	switch vv.Kind() {
+	case reflect.Slice:
+		return r.canonicalizeSliceParam(key, value, vv)
+	case reflect.Map, reflect.Struct:
+		decoded, err := marshalAndDecodeJSON(value)
+		if err != nil {
+			return nil, fmt.Errorf("cannot marshal map: %w", err)
+		}
+		if vv.Kind() == reflect.Struct {
+			if jsMap, ok := decoded.(map[string]any); ok {
+				if err := r.applyMarshalHooks(key, vv, jsMap); err != nil {
+					return nil, fmt.Errorf("cannot apply marshal hooks for param %s: %w", key, err)
+				}
+			}
+		}
+		return decoded, nil
+	default:
+		return value, nil
+	}
+}
+
+func (r *registry) canonicalizeSliceParam(key string, value any, vv reflect.Value) (any, error) {
+	elemT := vv.Type().Elem()
+	for elemT.Kind() == reflect.Ptr {
+		elemT = elemT.Elem()
+	}
+	isStructSlice := elemT.Kind() == reflect.Struct && len(r.afterMarshalHooks) > 0
+	if !isStructSlice {
+		bytes, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("cannot marshal slice: %w", err)
+		}
+		var js []any
+		if err := json.Unmarshal(bytes, &js); err != nil {
+			return nil, fmt.Errorf("cannot unmarshal slice: %w", err)
+		}
+		return js, nil
+	}
+
+	decoded := make([]any, vv.Len())
+	for i := 0; i < vv.Len(); i++ {
+		item, err := r.canonicalizeStructSliceElement(key, i, vv.Index(i))
+		if err != nil {
+			return nil, err
+		}
+		decoded[i] = item
+	}
+	return decoded, nil
+}
+
+func (r *registry) canonicalizeStructSliceElement(key string, index int, elem reflect.Value) (any, error) {
+	hookOriginal, ok := marshalHookOriginal(elem)
+	if !ok {
+		return nil, nil
+	}
+
+	decoded, err := marshalAndDecodeJSON(elem.Interface())
+	if err != nil {
+		return nil, fmt.Errorf("cannot marshal slice element %s[%d]: %w", key, index, err)
+	}
+	if hookOriginal.IsValid() && hookOriginal.Kind() == reflect.Struct {
+		if m, ok := decoded.(map[string]any); ok {
+			if err := r.applyMarshalHooks(key, hookOriginal, m); err != nil {
+				return nil, fmt.Errorf("cannot apply marshal hooks for param %s[%d]: %w", key, index, err)
+			}
+			decoded = m
+		}
+	}
+	return decoded, nil
+}
+
+func marshalHookOriginal(value reflect.Value) (reflect.Value, bool) {
+	for value.Kind() == reflect.Interface {
+		if value.IsNil() {
+			return reflect.Value{}, false
+		}
+		value = value.Elem()
+	}
+	if value.Kind() == reflect.Ptr {
+		if value.IsNil() {
+			return reflect.Value{}, false
+		}
+		return value.Elem(), true
+	}
+	return value, true
+}
+
+func marshalAndDecodeJSON(value any) (any, error) {
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var decoded any
+	if err := json.Unmarshal(bytes, &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
 func (r *registry) applyUnmarshalHooks(from any, value reflect.Value) error {
 	if value == (reflect.Value{}) {
 		return nil

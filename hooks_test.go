@@ -163,9 +163,8 @@ func TestMarshalHook(t *testing.T) {
 			}
 			return nil
 		})
-		result, err := canonicalizeParams(
+		result, err := r.canonicalizeParams(
 			map[string]any{"props": hookPerson{Name: "raw"}},
-			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].(map[string]any)
@@ -184,9 +183,8 @@ func TestMarshalHook(t *testing.T) {
 			return nil
 		})
 		people := []hookPerson{{Name: "Alice"}, {Name: "Bob"}}
-		result, err := canonicalizeParams(
+		result, err := r.canonicalizeParams(
 			map[string]any{"props": people},
-			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].([]any)
@@ -202,9 +200,8 @@ func TestMarshalHook(t *testing.T) {
 		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			return expected
 		})
-		_, err := canonicalizeParams(
+		_, err := r.canonicalizeParams(
 			map[string]any{"props": hookPerson{Name: "test"}},
-			r.applyMarshalHooks,
 		)
 		require.ErrorIs(t, err, expected)
 	})
@@ -215,9 +212,8 @@ func TestMarshalHook(t *testing.T) {
 		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			return expected
 		})
-		_, err := canonicalizeParams(
+		_, err := r.canonicalizeParams(
 			map[string]any{"props": []hookPerson{{Name: "test"}}},
-			r.applyMarshalHooks,
 		)
 		require.ErrorIs(t, err, expected)
 	})
@@ -229,9 +225,8 @@ func TestMarshalHook(t *testing.T) {
 			receivedKey = key
 			return nil
 		})
-		_, err := canonicalizeParams(
+		_, err := r.canonicalizeParams(
 			map[string]any{"myParam": hookPerson{Name: "test"}},
-			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		require.Equal(t, "myParam", receivedKey)
@@ -249,9 +244,8 @@ func TestMarshalHook(t *testing.T) {
 			}
 			return nil
 		})
-		result, err := canonicalizeParams(
+		result, err := r.canonicalizeParams(
 			map[string]any{"props": hiddenField{Name: "visible", Secret: "hidden"}},
-			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].(map[string]any)
@@ -266,9 +260,8 @@ func TestMarshalHook(t *testing.T) {
 		})
 
 		people := []*hookPerson{nil, {Name: "Alice"}}
-		result, err := canonicalizeParams(
+		result, err := r.canonicalizeParams(
 			map[string]any{"props": people},
-			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].([]any)
@@ -283,9 +276,8 @@ func TestMarshalHook(t *testing.T) {
 		})
 
 		people := []*hookPtrMarshalJSONPerson{{Name: "raw"}}
-		result, err := canonicalizeParams(
+		result, err := r.canonicalizeParams(
 			map[string]any{"props": people},
-			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].([]any)
