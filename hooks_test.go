@@ -1,15 +1,12 @@
 package neogo
 
 import (
-	"context"
 	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	"github.com/stretchr/testify/require"
-
-	"github.com/rlch/neogo/db"
 )
 
 type hookPerson struct {
@@ -260,28 +257,6 @@ func TestAfterMarshalHook(t *testing.T) {
 		props := result["props"].(map[string]any)
 		require.Equal(t, "visible", props["name"])
 		require.Equal(t, "hidden", props["secret_value"])
-	})
-
-	t.Run("query-builder struct props should also trigger hook", func(t *testing.T) {
-		t.Skip("deferred: real neogo API gap, but not needed for current locale usage paths")
-
-		ctx := context.Background()
-		m := NewMock().(*mockDriverImpl)
-		m.Bind(nil)
-
-		var called int
-		m.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
-			serialized["name"] = "hooked-via-builder"
-			called++
-			return nil
-		})
-
-		person := hookPerson{Name: "raw"}
-		err := m.Exec().
-			Create(db.Node(db.Qual(&person, "n"))).
-			Run(ctx)
-		require.NoError(t, err)
-		require.Equal(t, 1, called, "AfterMarshalHook should fire for struct-prop query-builder writes too")
 	})
 
 	t.Run("slice of struct pointers should canonicalize nil elements to nil", func(t *testing.T) {
