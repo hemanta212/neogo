@@ -270,6 +270,8 @@ func hookMapValue(parent any, field reflect.StructField) (any, bool) {
 	if value, ok := m[name]; ok {
 		return normalizeHookFrom(value), true
 	}
+	// Keep a case-insensitive fallback so hook source lookup stays aligned with
+	// the permissive field-name matching behavior used during JSON-based binding.
 	for key, value := range m {
 		if strings.EqualFold(key, name) {
 			return normalizeHookFrom(value), true
@@ -357,6 +359,9 @@ func (r *registry) applyUnmarshalHooksRecursive(
 			if childFrom, ok := hookIndexValue(from, i); ok {
 				elemFrom = childFrom
 			} else if i == 0 {
+				// Preserve the supported bind mode where a single non-slice source is
+				// coerced into a one-element slice: element 0 should still receive the
+				// parent raw source in that case.
 				elemFrom = normalizeHookFrom(from)
 			}
 			if err := r.applyUnmarshalHooksRecursive(elemFrom, value.Index(i), seen); err != nil {

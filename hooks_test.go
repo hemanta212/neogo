@@ -25,6 +25,10 @@ type hookNestedWrapper struct {
 	Person hookPerson `json:"person"`
 }
 
+type hookCaseFoldWrapper struct {
+	Person hookPerson
+}
+
 type hookPtrMarshalJSONPerson struct {
 	Name string `json:"name"`
 }
@@ -362,6 +366,26 @@ func TestUnmarshalHookRegressionCases(t *testing.T) {
 		require.Equal(t, map[string]any{"name": "nested"}, gotFrom)
 	})
 
+	t.Run("nested raw source lookup should allow case-insensitive field-name matching", func(t *testing.T) {
+		var (
+			gotFrom any
+			r       registry
+		)
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
+			if value.Type() == reflect.TypeOf(hookPerson{}) {
+				gotFrom = from
+			}
+			return nil
+		})
+
+		wrapper := hookCaseFoldWrapper{}
+		err := r.bindValue(map[string]any{
+			"person": map[string]any{"name": "casefold"},
+		}, reflect.ValueOf(&wrapper))
+		require.NoError(t, err)
+		require.Equal(t, map[string]any{"name": "casefold"}, gotFrom)
+	})
+
 	t.Run("slice elements should receive their own raw source maps", func(t *testing.T) {
 		var (
 			gotFroms []any
@@ -384,5 +408,25 @@ func TestUnmarshalHookRegressionCases(t *testing.T) {
 			map[string]any{"name": "one"},
 			map[string]any{"name": "two"},
 		}, gotFroms)
+	})
+
+	t.Run("single non-slice source coerced into slice should preserve element raw source", func(t *testing.T) {
+		var (
+			gotFroms []any
+			r        registry
+		)
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
+			if value.Type() == reflect.TypeOf(hookPerson{}) {
+				gotFroms = append(gotFroms, from)
+			}
+			return nil
+		})
+
+		var people []hookPerson
+		err := r.bindValue(neo4j.Node{Props: map[string]any{"name": "solo"}}, reflect.ValueOf(&people))
+		require.NoError(t, err)
+		require.Equal(t, []any{map[string]any{"name": "solo"}}, gotFroms)
+		require.Len(t, people, 1)
+		require.Equal(t, "solo", people[0].Name)
 	})
 }
