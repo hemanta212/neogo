@@ -45,8 +45,8 @@ type registry struct {
 	abstractNodes       []any
 	nodes               []any
 	relationships       []any
-	afterMarshalHooks   []AfterMarshalHook
-	afterUnmarshalHooks []AfterUnmarshalHook
+	afterMarshalHooks   []MarshalHook
+	afterUnmarshalHooks []UnmarshalHook
 }
 
 func (r *registry) registerTypes(types ...any) {
@@ -75,21 +75,21 @@ func (r *registry) registerTypes(types ...any) {
 	}
 }
 
-func (r *registry) registerAfterMarshalHook(hook AfterMarshalHook) {
+func (r *registry) registerMarshalHook(hook MarshalHook) {
 	if hook == nil {
 		return
 	}
 	r.afterMarshalHooks = append(r.afterMarshalHooks, hook)
 }
 
-func (r *registry) registerAfterUnmarshalHook(hook AfterUnmarshalHook) {
+func (r *registry) registerUnmarshalHook(hook UnmarshalHook) {
 	if hook == nil {
 		return
 	}
 	r.afterUnmarshalHooks = append(r.afterUnmarshalHooks, hook)
 }
 
-func (r *registry) applyAfterMarshalHooks(key string, original reflect.Value, serialized map[string]any) error {
+func (r *registry) applyMarshalHooks(key string, original reflect.Value, serialized map[string]any) error {
 	if len(r.afterMarshalHooks) == 0 {
 		return nil
 	}
@@ -101,14 +101,14 @@ func (r *registry) applyAfterMarshalHooks(key string, original reflect.Value, se
 	return nil
 }
 
-func (r *registry) applyAfterUnmarshalHooks(from any, value reflect.Value) error {
+func (r *registry) applyUnmarshalHooks(from any, value reflect.Value) error {
 	if value == (reflect.Value{}) {
 		return nil
 	}
 	if len(r.afterUnmarshalHooks) == 0 {
 		return nil
 	}
-	return r.applyAfterUnmarshalHooksRecursive(from, value, make(map[uintptr]struct{}))
+	return r.applyUnmarshalHooksRecursive(from, value, make(map[uintptr]struct{}))
 }
 
 func normalizeHookFrom(from any) any {
@@ -175,7 +175,7 @@ func hookIndexValue(parent any, index int) (any, bool) {
 	return normalizeHookFrom(value.Index(index).Interface()), true
 }
 
-func (r *registry) applyAfterUnmarshalHooksRecursive(
+func (r *registry) applyUnmarshalHooksRecursive(
 	from any,
 	value reflect.Value,
 	seen map[uintptr]struct{},
@@ -204,7 +204,7 @@ func (r *registry) applyAfterUnmarshalHooksRecursive(
 		if value.IsNil() {
 			return nil
 		}
-		return r.applyAfterUnmarshalHooksRecursive(from, value.Elem(), seen)
+		return r.applyUnmarshalHooksRecursive(from, value.Elem(), seen)
 	case reflect.Struct:
 		for _, hook := range r.afterUnmarshalHooks {
 			if err := hook(from, value); err != nil {
@@ -224,7 +224,7 @@ func (r *registry) applyAfterUnmarshalHooksRecursive(
 			} else if childFrom, ok := hookMapValue(from, ft); ok {
 				fieldFrom = childFrom
 			}
-			if err := r.applyAfterUnmarshalHooksRecursive(fieldFrom, fv, seen); err != nil {
+			if err := r.applyUnmarshalHooksRecursive(fieldFrom, fv, seen); err != nil {
 				return err
 			}
 		}
@@ -236,7 +236,7 @@ func (r *registry) applyAfterUnmarshalHooksRecursive(
 			} else if i == 0 {
 				elemFrom = normalizeHookFrom(from)
 			}
-			if err := r.applyAfterUnmarshalHooksRecursive(elemFrom, value.Index(i), seen); err != nil {
+			if err := r.applyUnmarshalHooksRecursive(elemFrom, value.Index(i), seen); err != nil {
 				return err
 			}
 		}
@@ -289,7 +289,7 @@ func (r *registry) bindValue(from any, to reflect.Value) error {
 	if err := r.bindValueNoHooks(from, to); err != nil {
 		return err
 	}
-	return r.applyAfterUnmarshalHooks(from, to)
+	return r.applyUnmarshalHooks(from, to)
 }
 
 func (r *registry) bindValueNoHooks(from any, to reflect.Value) (err error) {

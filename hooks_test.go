@@ -47,7 +47,7 @@ func TestUnmarshalHook(t *testing.T) {
 		called int
 		r      registry
 	)
-	r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+	r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 		if setHookName(value, "hooked") {
 			called++
 		}
@@ -84,7 +84,7 @@ func TestUnmarshalHookEdgeCases(t *testing.T) {
 	t.Run("propagates hook errors", func(t *testing.T) {
 		var r registry
 		expected := errors.New("boom")
-		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			return expected
 		})
 		person := hookPerson{}
@@ -97,7 +97,7 @@ func TestUnmarshalHookEdgeCases(t *testing.T) {
 			called int
 			r      registry
 		)
-		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			if setHookName(value, "nested") {
 				called++
 			}
@@ -118,14 +118,14 @@ func TestUnmarshalHookEdgeCases(t *testing.T) {
 			called int
 			r      registry
 		)
-		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			if setHookName(value, "iface") {
 				called++
 			}
 			return nil
 		})
 		wrapper := hookIfaceWrapper{Item: &hookPerson{Name: "x"}}
-		err := r.applyAfterUnmarshalHooks(nil, reflect.ValueOf(&wrapper))
+		err := r.applyUnmarshalHooks(nil, reflect.ValueOf(&wrapper))
 		require.NoError(t, err)
 		require.Equal(t, "iface", wrapper.Item.(*hookPerson).Name)
 		require.GreaterOrEqual(t, called, 1)
@@ -133,11 +133,11 @@ func TestUnmarshalHookEdgeCases(t *testing.T) {
 
 	t.Run("applies multiple hooks in order", func(t *testing.T) {
 		var r registry
-		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			setHookName(value, "first")
 			return nil
 		})
-		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			field := value.FieldByName("Name")
 			if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.String {
 				return nil
@@ -152,11 +152,11 @@ func TestUnmarshalHookEdgeCases(t *testing.T) {
 	})
 }
 
-func TestAfterMarshalHook(t *testing.T) {
+func TestMarshalHook(t *testing.T) {
 	t.Run("modifies serialized struct map", func(t *testing.T) {
 		var called int
 		var r registry
-		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			if _, ok := serialized["name"]; ok {
 				serialized["name"] = "hooked"
 				called++
@@ -165,7 +165,7 @@ func TestAfterMarshalHook(t *testing.T) {
 		})
 		result, err := canonicalizeParams(
 			map[string]any{"props": hookPerson{Name: "raw"}},
-			r.applyAfterMarshalHooks,
+			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].(map[string]any)
@@ -176,7 +176,7 @@ func TestAfterMarshalHook(t *testing.T) {
 	t.Run("fires per element for slice of structs", func(t *testing.T) {
 		var called int
 		var r registry
-		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			if name, ok := serialized["name"]; ok {
 				serialized["name"] = name.(string) + "-hooked"
 				called++
@@ -186,7 +186,7 @@ func TestAfterMarshalHook(t *testing.T) {
 		people := []hookPerson{{Name: "Alice"}, {Name: "Bob"}}
 		result, err := canonicalizeParams(
 			map[string]any{"props": people},
-			r.applyAfterMarshalHooks,
+			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].([]any)
@@ -199,12 +199,12 @@ func TestAfterMarshalHook(t *testing.T) {
 	t.Run("propagates hook errors", func(t *testing.T) {
 		expected := errors.New("hook failed")
 		var r registry
-		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			return expected
 		})
 		_, err := canonicalizeParams(
 			map[string]any{"props": hookPerson{Name: "test"}},
-			r.applyAfterMarshalHooks,
+			r.applyMarshalHooks,
 		)
 		require.ErrorIs(t, err, expected)
 	})
@@ -212,12 +212,12 @@ func TestAfterMarshalHook(t *testing.T) {
 	t.Run("propagates hook errors for slice elements", func(t *testing.T) {
 		expected := errors.New("slice hook failed")
 		var r registry
-		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			return expected
 		})
 		_, err := canonicalizeParams(
 			map[string]any{"props": []hookPerson{{Name: "test"}}},
-			r.applyAfterMarshalHooks,
+			r.applyMarshalHooks,
 		)
 		require.ErrorIs(t, err, expected)
 	})
@@ -225,13 +225,13 @@ func TestAfterMarshalHook(t *testing.T) {
 	t.Run("receives param key name", func(t *testing.T) {
 		var receivedKey string
 		var r registry
-		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			receivedKey = key
 			return nil
 		})
 		_, err := canonicalizeParams(
 			map[string]any{"myParam": hookPerson{Name: "test"}},
-			r.applyAfterMarshalHooks,
+			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		require.Equal(t, "myParam", receivedKey)
@@ -243,7 +243,7 @@ func TestAfterMarshalHook(t *testing.T) {
 			Secret string `json:"-"`
 		}
 		var r registry
-		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			if secret := original.FieldByName("Secret"); secret.IsValid() {
 				serialized["secret_value"] = secret.String()
 			}
@@ -251,7 +251,7 @@ func TestAfterMarshalHook(t *testing.T) {
 		})
 		result, err := canonicalizeParams(
 			map[string]any{"props": hiddenField{Name: "visible", Secret: "hidden"}},
-			r.applyAfterMarshalHooks,
+			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].(map[string]any)
@@ -261,14 +261,14 @@ func TestAfterMarshalHook(t *testing.T) {
 
 	t.Run("slice of struct pointers should canonicalize nil elements to nil", func(t *testing.T) {
 		var r registry
-		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			return nil
 		})
 
 		people := []*hookPerson{nil, {Name: "Alice"}}
 		result, err := canonicalizeParams(
 			map[string]any{"props": people},
-			r.applyAfterMarshalHooks,
+			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].([]any)
@@ -278,14 +278,14 @@ func TestAfterMarshalHook(t *testing.T) {
 
 	t.Run("slice of struct pointers should preserve pointer MarshalJSON behavior", func(t *testing.T) {
 		var r registry
-		r.registerAfterMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
+		r.registerMarshalHook(func(key string, original reflect.Value, serialized map[string]any) error {
 			return nil
 		})
 
 		people := []*hookPtrMarshalJSONPerson{{Name: "raw"}}
 		result, err := canonicalizeParams(
 			map[string]any{"props": people},
-			r.applyAfterMarshalHooks,
+			r.applyMarshalHooks,
 		)
 		require.NoError(t, err)
 		props := result["props"].([]any)
@@ -300,7 +300,7 @@ func TestUnmarshalHookRegressionCases(t *testing.T) {
 			called int
 			r      registry
 		)
-		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			field := value.FieldByName("Name")
 			if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.String {
 				return nil
@@ -327,7 +327,7 @@ func TestUnmarshalHookRegressionCases(t *testing.T) {
 			gotRelationship any
 			r               registry
 		)
-		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			switch value.Type() {
 			case reflect.TypeOf(hookPerson{}):
 				gotNode = from
@@ -355,7 +355,7 @@ func TestUnmarshalHookRegressionCases(t *testing.T) {
 			gotFrom any
 			r       registry
 		)
-		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			if value.Type() == reflect.TypeOf(hookPerson{}) {
 				gotFrom = from
 			}
@@ -375,7 +375,7 @@ func TestUnmarshalHookRegressionCases(t *testing.T) {
 			gotFroms []any
 			r        registry
 		)
-		r.registerAfterUnmarshalHook(func(from any, value reflect.Value) error {
+		r.registerUnmarshalHook(func(from any, value reflect.Value) error {
 			if value.Type() == reflect.TypeOf(hookPerson{}) {
 				gotFroms = append(gotFroms, from)
 			}

@@ -262,7 +262,7 @@ func (c *runnerImpl) run(
 	if err != nil {
 		return nil, fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.registry.applyAfterMarshalHooks)
+	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.registry.applyMarshalHooks)
 	if err != nil {
 		return nil, fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -317,7 +317,7 @@ func (c *runnerImpl) StreamWithParams(ctx context.Context, params map[string]any
 	if err != nil {
 		return fmt.Errorf("cannot compile cypher: %w", err)
 	}
-	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.registry.applyAfterMarshalHooks)
+	canonicalizedParams, err := canonicalizeParams(cy.Parameters, c.registry.applyMarshalHooks)
 	if err != nil {
 		return fmt.Errorf("cannot serialize parameters: %w", err)
 	}
@@ -535,7 +535,7 @@ func (c *runnerImpl) executeTransaction(
 
 func canonicalizeParams(
 	params map[string]any,
-	applyAfterMarshalHooks func(key string, original reflect.Value, serialized map[string]any) error,
+	applyMarshalHooks func(key string, original reflect.Value, serialized map[string]any) error,
 ) (map[string]any, error) {
 	canon := make(map[string]any, len(params))
 	if len(params) == 0 {
@@ -557,7 +557,7 @@ func canonicalizeParams(
 			for elemT.Kind() == reflect.Ptr {
 				elemT = elemT.Elem()
 			}
-			isStructSlice := elemT.Kind() == reflect.Struct && applyAfterMarshalHooks != nil
+			isStructSlice := elemT.Kind() == reflect.Struct && applyMarshalHooks != nil
 
 			if isStructSlice {
 				js := make([]any, vv.Len())
@@ -593,7 +593,7 @@ func canonicalizeParams(
 					}
 					if hookOriginal.IsValid() && hookOriginal.Kind() == reflect.Struct {
 						if m, ok := decoded.(map[string]any); ok {
-							if err := applyAfterMarshalHooks(k, hookOriginal, m); err != nil {
+							if err := applyMarshalHooks(k, hookOriginal, m); err != nil {
 								return nil, fmt.Errorf("cannot apply after-marshal hooks for param %s[%d]: %w", k, i, err)
 							}
 							decoded = m
@@ -622,9 +622,9 @@ func canonicalizeParams(
 			if err := json.Unmarshal(bytes, &js); err != nil {
 				return nil, fmt.Errorf("cannot unmarshal map: %w", err)
 			}
-			if applyAfterMarshalHooks != nil && vv.Kind() == reflect.Struct {
+			if applyMarshalHooks != nil && vv.Kind() == reflect.Struct {
 				if jsMap, ok := js.(map[string]any); ok {
-					if err := applyAfterMarshalHooks(k, vv, jsMap); err != nil {
+					if err := applyMarshalHooks(k, vv, jsMap); err != nil {
 						return nil, fmt.Errorf("cannot apply after-marshal hooks for param %s: %w", k, err)
 					}
 				}
